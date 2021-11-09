@@ -1,12 +1,16 @@
 #![allow(dead_code)]
 
-use std::{collections::BinaryHeap, marker::PhantomData, rc::Rc};
+use std::{marker::PhantomData, rc::Rc};
 
 trait KVIter<K, V> {
     fn next(&mut self) -> Option<(&K, &V)>;
     fn peek(&mut self) -> Option<(&K, &V)>;
     fn prev(&mut self) -> Option<(&K, &V)>;
     fn peek_prev(&mut self) -> Option<(&K, &V)>;
+
+    // Positions the iterator to the left of the first location the key is >=
+    // to.
+    fn seek_ge(&mut self, key: &K);
 }
 
 // There is a matrix of four states we can be in:
@@ -117,6 +121,7 @@ where
         };
         Some((&self.buf.0, &self.buf.1))
     }
+
     fn peek(&mut self) -> Option<(&K, &V)> {
         let state = self.state;
         match state {
@@ -134,6 +139,7 @@ where
         };
         Some((&self.buf.0, &self.buf.1))
     }
+
     fn prev(&mut self) -> Option<(&K, &V)> {
         match self.state {
             LogPhysState::FwdEq => {
@@ -153,6 +159,7 @@ where
         };
         Some((&self.buf.0, &self.buf.1))
     }
+
     fn peek_prev(&mut self) -> Option<(&K, &V)> {
         match self.state {
             LogPhysState::FwdBehind => {
@@ -168,6 +175,13 @@ where
             }
         };
         Some((&self.buf.0, &self.buf.1))
+    }
+
+    fn seek_ge(&mut self, key: &K) {
+        // TODO: we should use a buffer to clone_into the key here.
+        self.iter.seek_ge(&(key.clone(), 0));
+        self.physical_forwards();
+        self.state = LogPhysState::FwdBehind;
     }
 }
 
@@ -186,7 +200,10 @@ impl<K, V> VecIter<K, V> {
     }
 }
 
-impl<K, V> KVIter<K, V> for VecIter<K, V> {
+impl<K, V> KVIter<K, V> for VecIter<K, V>
+where
+    K: Ord,
+{
     fn next(&mut self) -> Option<(&K, &V)> {
         if self.idx >= self.contents.len() {
             None
@@ -223,6 +240,14 @@ impl<K, V> KVIter<K, V> for VecIter<K, V> {
             let v = &self.contents[self.idx - 1];
             Some((&v.0, &v.1))
         }
+    }
+
+    fn seek_ge(&mut self, key: &K) {
+        let idx = match self.contents.binary_search_by_key(&key, |(k, _)| k) {
+            Ok(x) => x,
+            Err(x) => x,
+        };
+        self.idx = idx;
     }
 }
 
@@ -298,6 +323,16 @@ fn test_seqnum_iter() {
                 }
                 out
             }
+            "seek-ge" => {
+                let key = test_case
+                    .args
+                    .get("key")
+                    .expect("seek-ge requires key argument")
+                    .get(0)
+                    .unwrap();
+                iter.as_mut().unwrap().seek_ge(key);
+                "ok\n".into()
+            }
             _ => {
                 panic!("unhandled");
             }
@@ -336,14 +371,13 @@ where
                 None => {
                     lowest = it.peek().map(|kv| (idx, kv));
                 }
-                Some((_, (k, v))) => match it.peek() {
-                    Some((k2, _)) => {
+                Some((_, (k, v))) => {
+                    if let Some((k2, _)) = it.peek() {
                         if k2 < k {
                             lowest = Some((idx, (k, v)));
                         }
                     }
-                    None => {}
-                },
+                }
             }
         }
 
@@ -358,14 +392,13 @@ where
                 None => {
                     highest = it.peek_prev().map(|kv| (idx, kv));
                 }
-                Some((_, (k, v))) => match it.peek_prev() {
-                    Some((k2, _)) => {
+                Some((_, (k, v))) => {
+                    if let Some((k2, _)) = it.peek_prev() {
                         if k2 > k {
                             highest = Some((idx, (k, v)));
                         }
                     }
-                    None => {}
-                },
+                }
             }
         }
 
@@ -397,6 +430,12 @@ where
         let i = self.highest()?;
         self.iters[i].prev()
     }
+
+    fn seek_ge(&mut self, key: &K) {
+        for it in self.iters.iter_mut() {
+            it.seek_ge(key);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -426,13 +465,6 @@ mod tests {
                 ])),
             ]),
         );
-
-        for _ in 0..15 {
-            println!("{:?}", t.next());
-        }
-        // for _ in 0..15 {
-        //     println!("{:?}", t.prev());
-        // }
     }
 }
 
@@ -484,13 +516,13 @@ where
                 }
                 (Some(((k1, s1), v1)), Some(((k2, s2), v2))) => {
                     if (k1, s1) < (k2, s2) {
-                        out.push(((k1.clone(), s1.clone()), v1.clone()));
+                        out.push(((k1.clone(), *s1), v1.clone()));
                         left = lhs.next();
                     } else {
                         // In this case, k2 must be < k1, because by
                         // construction a seqnum in a more-right slab must be
                         // greater than any in a more-left slab.
-                        out.push(((k2.clone(), s2.clone()), v2.clone()));
+                        out.push(((k2.clone(), *s2), v2.clone()));
                         right = rhs.next();
                     }
                 }

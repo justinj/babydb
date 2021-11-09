@@ -74,3 +74,12 @@ scan
 < baz=baz2
 < eof
 < eof
+
+seek-ge key=foo
+----
+ok
+
+scan
+>
+----
+> foo=foo2

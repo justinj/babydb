@@ -1,0 +1,76 @@
+insert
+baz=baz2@2
+baz=baz3@3
+baz=baz4@4
+foo=foo1@1
+foo=foo2@2
+foo=foo3@3
+----
+ok
+
+read ts=2
+----
+ok
+
+scan
+>>
+----
+> baz=baz2
+> foo=foo2
+
+read ts=2
+----
+ok
+
+scan
+)>))))>
+----
+) baz=baz2
+> baz=baz2
+) foo=foo2
+) foo=foo2
+) foo=foo2
+) foo=foo2
+> foo=foo2
+
+read ts=2
+----
+ok
+
+scan
+><
+----
+> baz=baz2
+< baz=baz2
+
+scan
+)>>(>><
+----
+) baz=baz2
+> baz=baz2
+> foo=foo2
+( foo=foo2
+> eof
+> eof
+< foo=foo2
+
+read ts=2
+----
+ok
+
+scan
+)>>()<)<(><<<
+----
+) baz=baz2
+> baz=baz2
+> foo=foo2
+( foo=foo2
+) eof
+< foo=foo2
+) foo=foo2
+< baz=baz2
+( eof
+> baz=baz2
+< baz=baz2
+< eof
+< eof

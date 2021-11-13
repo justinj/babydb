@@ -15,8 +15,8 @@ ok
 scan
 >>
 ----
-> baz=baz2
-> foo=foo2
+> baz=baz2 (FwdEq)
+> foo=foo2 (FwdEq)
 
 read ts=2
 ----
@@ -25,13 +25,13 @@ ok
 scan
 )>))))>
 ----
-) baz=baz2
-> baz=baz2
-) foo=foo2
-) foo=foo2
-) foo=foo2
-) foo=foo2
-> foo=foo2
+) baz=baz2 (FwdBehind)
+> baz=baz2 (FwdEq)
+) foo=foo2 (FwdBehind)
+) foo=foo2 (FwdBehind)
+) foo=foo2 (FwdBehind)
+) foo=foo2 (FwdBehind)
+> foo=foo2 (FwdEq)
 
 read ts=2
 ----
@@ -40,19 +40,19 @@ ok
 scan
 ><
 ----
-> baz=baz2
-< baz=baz2
+> baz=baz2 (FwdEq)
+< baz=baz2 (FwdBehind)
 
 scan
 )>>(>><
 ----
-) baz=baz2
-> baz=baz2
-> foo=foo2
-( foo=foo2
-> eof
-> eof
-< foo=foo2
+) baz=baz2 (FwdBehind)
+> baz=baz2 (FwdEq)
+> foo=foo2 (FwdEq)
+( foo=foo2 (FwdEq)
+> eof (AtEnd)
+> eof (AtEnd)
+< foo=foo2 (RevEq)
 
 read ts=2
 ----
@@ -61,19 +61,19 @@ ok
 scan
 )>>()<)<(><<<
 ----
-) baz=baz2
-> baz=baz2
-> foo=foo2
-( foo=foo2
-) eof
-< foo=foo2
-) foo=foo2
-< baz=baz2
-( eof
-> baz=baz2
-< baz=baz2
-< eof
-< eof
+) baz=baz2 (FwdBehind)
+> baz=baz2 (FwdEq)
+> foo=foo2 (FwdEq)
+( foo=foo2 (FwdEq)
+) eof (AtEnd)
+< foo=foo2 (RevEq)
+) foo=foo2 (RevEq)
+< baz=baz2 (RevEq)
+( eof (RevEq)
+> baz=baz2 (RevBehind)
+< baz=baz2 (RevEq)
+< eof (AtStart)
+< eof (AtStart)
 
 seek-ge key=foo
 ----
@@ -82,4 +82,4 @@ ok
 scan
 >
 ----
-> foo=foo2
+> foo=foo2 (FwdEq)

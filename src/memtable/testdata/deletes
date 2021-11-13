@@ -1,0 +1,74 @@
+insert
+abc=<DELETE>@2
+abc=baz3@3
+abc=baz4@4
+baz=baz2@2
+baz=baz3@3
+baz=baz4@4
+foo=foo1@1
+foo=<DELETE>@2
+foo=foo3@3
+----
+ok
+
+read ts=1
+----
+ok
+
+scan
+>>><<<
+----
+> foo=foo1 (FwdEq)
+> eof (AtEnd)
+> eof (AtEnd)
+< foo=foo1 (RevEq)
+< eof (AtStart)
+< eof (AtStart)
+
+read ts=2
+----
+ok
+
+scan
+>>><<<
+----
+> baz=baz2 (FwdEq)
+> eof (AtEnd)
+> eof (AtEnd)
+< baz=baz2 (RevEq)
+< eof (AtStart)
+< eof (AtStart)
+
+scan
+<>)()()
+----
+< eof (AtStart)
+> baz=baz2 (FwdEq)
+) eof (AtEnd)
+( baz=baz2 (RevBehind)
+) eof (AtEnd)
+( baz=baz2 (RevBehind)
+) eof (AtEnd)
+
+scan
+)()>>
+----
+) eof (AtEnd)
+( baz=baz2 (RevBehind)
+) eof (AtEnd)
+> eof (AtEnd)
+> eof (AtEnd)
+
+read ts=3
+----
+ok
+
+scan
+>>><<<
+----
+> abc=baz3 (FwdEq)
+> baz=baz3 (FwdEq)
+> foo=foo3 (FwdEq)
+< foo=foo3 (FwdBehind)
+< baz=baz3 (RevEq)
+< abc=baz3 (RevEq)

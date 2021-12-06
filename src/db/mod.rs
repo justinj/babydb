@@ -125,18 +125,9 @@ mod test {
     fn insert() {
         let mut db: Db<String, String, MockLog<DBEntry<String, String>>> =
             Db::new("db_data/".to_owned());
-        db.insert("foo".into(), "bar1".into());
-        db.insert("foo".into(), "bar2".into());
-        let iter1 = db.scan();
-        db.insert("foo".into(), "bar3".into());
-
-        let iter2 = db.scan();
-        db.delete("foo".into());
-        let iter3 = db.scan();
-
-        println!("x = {:?}", iter1.collect::<Vec<_>>());
-        println!("x = {:?}", iter2.collect::<Vec<_>>());
-        println!("x = {:?}", iter3.collect::<Vec<_>>());
+        for i in 0..1000 {
+            db.insert("foo".into(), format!("bar{}", i));
+        }
 
         let fname = db.flush_memtable().unwrap();
 

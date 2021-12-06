@@ -63,7 +63,7 @@ fn test_escaping() {
     }
 }
 
-pub trait Encode {
+pub trait Encode: std::fmt::Debug {
     fn write_bytes(&self, buf: &mut Vec<u8>, scratch: &mut Vec<u8>);
 }
 
@@ -215,6 +215,11 @@ where
         }
     }
 
+    fn flush(&mut self) -> anyhow::Result<()> {
+        self.w.flush()?;
+        Ok(())
+    }
+
     fn location(&self) -> usize {
         self.written
     }
@@ -324,12 +329,12 @@ where
     pub fn load(fname: &str) -> anyhow::Result<Self> {
         let mut file = OpenOptions::new().read(true).open(fname)?;
 
-        file.seek(SeekFrom::End(-4))?;
+        file.seek(SeekFrom::End(-8))?;
         let mut buf = [0_u8; 4];
         file.read_exact(&mut buf)?;
         let data_len = u32::from_le_bytes(buf);
 
-        file.seek(SeekFrom::End(-8))?;
+        file.seek(SeekFrom::End(-4))?;
         file.read_exact(&mut buf)?;
         let index_len = u32::from_le_bytes(buf);
 
@@ -389,6 +394,7 @@ where
 
         while let Some(kv) = self.it.next() {
             written += 1;
+            // println!("writing {}", written);
 
             if written >= RESET_INTERVAL {
                 index_writer.write(&(kv.0, self.writer.location()))?;
@@ -408,6 +414,8 @@ where
         // Write the length of the index block.
         self.writer
             .write_bytes_raw(&(index.len() as u32).to_le_bytes())?;
+
+        self.writer.flush()?;
         Ok(())
     }
 }

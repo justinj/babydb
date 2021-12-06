@@ -2,7 +2,10 @@
 
 use std::{marker::PhantomData, rc::Rc};
 
-pub trait KVIter<K, V> {
+pub trait KVIter<K, V>: Sized
+where
+    K: Ord,
+{
     fn next(&mut self) -> Option<(&K, &V)>;
     fn peek(&mut self) -> Option<(&K, &V)>;
     fn prev(&mut self) -> Option<(&K, &V)>;
@@ -13,14 +16,8 @@ pub trait KVIter<K, V> {
     fn seek_ge(&mut self, key: &K);
 }
 
-// There is a matrix of four states we can be in:
-
-// Buffer is currently filled to the left, vs. right
-// times
-// Whether the logical position is behind or equal to the physical position.
-
 #[derive(Clone, Copy, Debug)]
-enum LogPhysState {
+enum PhysicalState {
     FwdEq,
     FwdBehind,
     RevEq,
@@ -31,11 +28,12 @@ enum LogPhysState {
 
 pub struct SeqnumIter<I, K, V>
 where
+    K: Ord,
     I: KVIter<(K, usize), Option<V>>,
 {
     iter: I,
     seqnum: usize,
-    state: LogPhysState,
+    state: PhysicalState,
     buf: (K, V),
 }
 
@@ -47,19 +45,29 @@ where
 {
     fn new(seqnum: usize, iter: I) -> Self {
         SeqnumIter {
-            state: LogPhysState::AtStart,
+            state: PhysicalState::AtStart,
             iter,
             seqnum,
             buf: <(K, V)>::default(),
         }
     }
 
-    fn physical_forwards(&mut self) -> Option<()> {
+    fn physical_forwards(&mut self) -> bool {
         let mut valid = false;
         while !valid {
-            let (mut ks, mut v) = self.iter.next()?;
+            let (mut ks, mut v) = match self.iter.next() {
+                Some((k, v)) => (k, v),
+                None => {
+                    return false;
+                }
+            };
             while ks.1 > self.seqnum {
-                let (nks, nv) = self.iter.next()?;
+                let (nks, nv) = match self.iter.next() {
+                    Some((k, v)) => (k, v),
+                    None => {
+                        return false;
+                    }
+                };
                 ks = nks;
                 v = nv;
             }
@@ -85,15 +93,25 @@ where
             }
         }
 
-        Some(())
+        true
     }
 
-    fn physical_reverse(&mut self) -> Option<()> {
+    fn physical_reverse(&mut self) -> bool {
         let mut valid = false;
         while !valid {
-            let (mut ks, mut v) = self.iter.prev()?;
+            let (mut ks, mut v) = match self.iter.prev() {
+                Some((k, v)) => (k, v),
+                None => {
+                    return false;
+                }
+            };
             while ks.1 > self.seqnum {
-                let (nks, nv) = self.iter.prev()?;
+                let (nks, nv) = match self.iter.prev() {
+                    Some((k, v)) => (k, v),
+                    None => {
+                        return false;
+                    }
+                };
                 ks = nks;
                 v = nv;
             }
@@ -110,7 +128,8 @@ where
                 self.iter.prev();
             }
         }
-        Some(())
+
+        true
     }
 }
 
@@ -122,30 +141,61 @@ where
 {
     fn next(&mut self) -> Option<(&K, &V)> {
         match self.state {
-            LogPhysState::AtEnd => {
+            PhysicalState::AtEnd => {
                 return None;
             }
-            LogPhysState::AtStart | LogPhysState::FwdEq => {
-                match self.physical_forwards() {
-                    None => {
-                        self.state = LogPhysState::AtEnd;
-                        return None;
-                    }
-                    Some(_) => {
-                        self.state = LogPhysState::FwdEq;
-                    }
-                };
+            PhysicalState::RevEq => {
+                self.state = PhysicalState::RevBehind;
             }
-            LogPhysState::FwdBehind => {
-                self.state = LogPhysState::FwdEq;
+            PhysicalState::RevBehind => {
+                if self.physical_forwards() && self.physical_forwards() {
+                    self.state = PhysicalState::FwdEq;
+                } else {
+                    self.state = PhysicalState::AtEnd;
+                    return None;
+                }
             }
-            LogPhysState::RevEq => {
-                self.state = LogPhysState::RevBehind;
+            PhysicalState::AtStart | PhysicalState::FwdEq => {
+                if self.physical_forwards() {
+                    self.state = PhysicalState::FwdEq;
+                } else {
+                    self.state = PhysicalState::AtEnd;
+                    return None;
+                }
             }
-            LogPhysState::RevBehind => {
-                self.state = LogPhysState::FwdEq;
-                self.physical_forwards()?;
-                self.physical_forwards()?;
+            PhysicalState::FwdBehind => {
+                self.state = PhysicalState::FwdEq;
+            }
+        };
+        Some((&self.buf.0, &self.buf.1))
+    }
+
+    fn prev(&mut self) -> Option<(&K, &V)> {
+        match self.state {
+            PhysicalState::AtStart => {
+                return None;
+            }
+            PhysicalState::FwdEq => {
+                self.state = PhysicalState::FwdBehind;
+            }
+            PhysicalState::FwdBehind => {
+                if self.physical_reverse() && self.physical_reverse() {
+                    self.state = PhysicalState::RevEq;
+                } else {
+                    self.state = PhysicalState::AtStart;
+                    return None;
+                }
+            }
+            PhysicalState::AtEnd | PhysicalState::RevEq => {
+                if self.physical_reverse() {
+                    self.state = PhysicalState::RevEq;
+                } else {
+                    self.state = PhysicalState::AtStart;
+                    return None;
+                }
+            }
+            PhysicalState::RevBehind => {
+                self.state = PhysicalState::RevEq;
             }
         };
         Some((&self.buf.0, &self.buf.1))
@@ -154,61 +204,25 @@ where
     fn peek(&mut self) -> Option<(&K, &V)> {
         let state = self.state;
         match state {
-            LogPhysState::AtEnd => {
+            PhysicalState::AtEnd => {
                 return None;
             }
-            LogPhysState::AtStart | LogPhysState::FwdEq => match self.physical_forwards() {
-                None => {
-                    self.state = LogPhysState::AtEnd;
+            PhysicalState::AtStart | PhysicalState::FwdEq => {
+                if self.physical_forwards() {
+                    self.state = PhysicalState::FwdBehind;
+                } else {
+                    self.state = PhysicalState::AtEnd;
                     return None;
                 }
-                Some(_) => {
-                    self.state = LogPhysState::FwdBehind;
-                }
-            },
-            LogPhysState::FwdBehind => (),
-            LogPhysState::RevEq => (),
-            LogPhysState::RevBehind => {
-                if self.physical_forwards().is_none() {
-                    self.state = LogPhysState::AtEnd;
+            }
+            PhysicalState::FwdBehind => (),
+            PhysicalState::RevEq => (),
+            PhysicalState::RevBehind => {
+                if !self.physical_forwards() || !self.physical_forwards() {
+                    self.state = PhysicalState::AtEnd;
                     return None;
                 }
-                if self.physical_forwards().is_none() {
-                    self.state = LogPhysState::AtEnd;
-                    return None;
-                }
-                self.state = LogPhysState::FwdBehind;
-            }
-        };
-        Some((&self.buf.0, &self.buf.1))
-    }
-
-    fn prev(&mut self) -> Option<(&K, &V)> {
-        match self.state {
-            LogPhysState::AtStart => {
-                return None;
-            }
-            LogPhysState::FwdEq => {
-                self.state = LogPhysState::FwdBehind;
-            }
-            LogPhysState::FwdBehind => {
-                self.state = LogPhysState::RevEq;
-                self.physical_reverse()?;
-                self.physical_reverse()?;
-            }
-            LogPhysState::AtEnd | LogPhysState::RevEq => {
-                match self.physical_reverse() {
-                    None => {
-                        self.state = LogPhysState::AtStart;
-                        return None;
-                    }
-                    Some(_) => {
-                        self.state = LogPhysState::RevEq;
-                    }
-                };
-            }
-            LogPhysState::RevBehind => {
-                self.state = LogPhysState::RevEq;
+                self.state = PhysicalState::FwdBehind;
             }
         };
         Some((&self.buf.0, &self.buf.1))
@@ -216,25 +230,26 @@ where
 
     fn peek_prev(&mut self) -> Option<(&K, &V)> {
         match self.state {
-            LogPhysState::AtStart => {
+            PhysicalState::AtStart => {
                 return None;
             }
-            LogPhysState::FwdBehind => {
-                if self.physical_reverse().is_none() {
-                    self.state = LogPhysState::AtStart;
+            PhysicalState::FwdBehind => {
+                if self.physical_reverse() && self.physical_reverse() {
+                    self.state = PhysicalState::RevBehind;
+                } else {
+                    self.state = PhysicalState::AtStart;
                     return None;
                 }
-                if self.physical_reverse().is_none() {
-                    self.state = LogPhysState::AtStart;
-                    return None;
-                }
-                self.state = LogPhysState::RevBehind;
             }
-            LogPhysState::FwdEq => (),
-            LogPhysState::RevBehind => (),
-            LogPhysState::AtEnd | LogPhysState::RevEq => {
-                self.physical_reverse()?;
-                self.state = LogPhysState::RevBehind;
+            PhysicalState::FwdEq => (),
+            PhysicalState::RevBehind => (),
+            PhysicalState::AtEnd | PhysicalState::RevEq => {
+                if self.physical_reverse() {
+                    self.state = PhysicalState::RevBehind;
+                } else {
+                    self.state = PhysicalState::AtStart;
+                    return None;
+                }
             }
         };
         Some((&self.buf.0, &self.buf.1))
@@ -244,7 +259,7 @@ where
         // TODO: we should use a buffer to clone_into the key here.
         self.iter.seek_ge(&(key.clone(), 0));
         self.physical_forwards();
-        self.state = LogPhysState::FwdBehind;
+        self.state = PhysicalState::FwdBehind;
     }
 }
 
@@ -314,102 +329,9 @@ where
     }
 }
 
-#[test]
-fn test_seqnum_iter() {
-    datadriven::walk("src/memtable/testdata/", |f| {
-        let mut iter = None;
-        let mut data = Vec::new();
-        f.run(|test_case| match test_case.directive.as_str() {
-            "insert" => {
-                for line in test_case.input.lines() {
-                    let eq_idx = line.find('=').unwrap();
-                    let at_idx = line.find('@').unwrap();
-                    let key = line[0..eq_idx].to_owned();
-                    let val = line[eq_idx + 1..at_idx].to_owned();
-                    let seqnum: usize = line[at_idx + 1..].parse().unwrap();
-                    if val == "<DELETE>" {
-                        data.push(((key, seqnum), None));
-                    } else {
-                        data.push(((key, seqnum), Some(val)));
-                    }
-                }
-                data.sort();
-                "ok\n".into()
-            }
-            "read" => {
-                let ts = test_case
-                    .args
-                    .get("ts")
-                    .expect("read requires ts argument")
-                    .get(0)
-                    .unwrap()
-                    .parse()
-                    .unwrap();
-                iter = Some(SeqnumIter::new(ts, VecIter::new(Rc::new(data.clone()))));
-                "ok\n".into()
-            }
-            "scan" => {
-                let mut out = String::new();
-                for command in test_case.input.trim().chars() {
-                    match command {
-                        '>' => match iter.as_mut().unwrap().next() {
-                            None => {
-                                out.push_str("> eof");
-                            }
-                            Some((k, v)) => {
-                                out.push_str(&format!("> {}={}", k, v));
-                            }
-                        },
-                        ')' => match iter.as_mut().unwrap().peek() {
-                            None => {
-                                out.push_str(") eof");
-                            }
-                            Some((k, v)) => {
-                                out.push_str(&format!(") {}={}", k, v));
-                            }
-                        },
-                        '<' => match iter.as_mut().unwrap().prev() {
-                            None => {
-                                out.push_str("< eof");
-                            }
-                            Some((k, v)) => {
-                                out.push_str(&format!("< {}={}", k, v));
-                            }
-                        },
-                        '(' => match iter.as_mut().unwrap().peek_prev() {
-                            None => {
-                                out.push_str("( eof");
-                            }
-                            Some((k, v)) => {
-                                out.push_str(&format!("( {}={}", k, v));
-                            }
-                        },
-
-                        _ => panic!("unhandled: {}", command),
-                    }
-                    out.push_str(&format!(" ({:?})\n", iter.as_ref().unwrap().state));
-                }
-                out
-            }
-            "seek-ge" => {
-                let key = test_case
-                    .args
-                    .get("key")
-                    .expect("seek-ge requires key argument")
-                    .get(0)
-                    .unwrap();
-                iter.as_mut().unwrap().seek_ge(key);
-                "ok\n".into()
-            }
-            _ => {
-                panic!("unhandled");
-            }
-        })
-    })
-}
-
 pub struct MergingIter<I, K, V>
 where
+    K: Ord,
     I: KVIter<K, V>,
 {
     iters: Vec<I>,
@@ -510,29 +432,100 @@ where
 mod tests {
     use std::rc::Rc;
 
-    use crate::memtable::{KVIter, MergingIter, SeqnumIter, VecIter};
+    use crate::memtable::{KVIter, SeqnumIter, VecIter};
 
     #[test]
-    fn it_works() {
-        let mut t = SeqnumIter::new(
-            4,
-            MergingIter::new(vec![
-                VecIter::new(Rc::new(vec![
-                    ((1, 0), Some(1)),
-                    ((2, 1), Some(2)),
-                    ((3, 2), Some(3)),
-                    ((5, 10), Some(5)),
-                    ((8, 3), Some(4)),
-                ])),
-                VecIter::new(Rc::new(vec![
-                    ((4, 2), Some(3)),
-                    ((6, 0), Some(1)),
-                    ((7, 1), Some(2)),
-                    ((9, 3), Some(4)),
-                    ((10, 4), Some(5)),
-                ])),
-            ]),
-        );
+    fn test_seqnum_iter() {
+        datadriven::walk("src/memtable/testdata/", |f| {
+            let mut iter = None;
+            let mut data = Vec::new();
+            f.run(|test_case| match test_case.directive.as_str() {
+                "insert" => {
+                    for line in test_case.input.lines() {
+                        let eq_idx = line.find('=').unwrap();
+                        let at_idx = line.find('@').unwrap();
+                        let key = line[0..eq_idx].to_owned();
+                        let val = line[eq_idx + 1..at_idx].to_owned();
+                        let seqnum: usize = line[at_idx + 1..].parse().unwrap();
+                        if val == "<DELETE>" {
+                            data.push(((key, seqnum), None));
+                        } else {
+                            data.push(((key, seqnum), Some(val)));
+                        }
+                    }
+                    data.sort();
+                    "ok\n".into()
+                }
+                "read" => {
+                    let ts = test_case
+                        .args
+                        .get("ts")
+                        .expect("read requires ts argument")
+                        .get(0)
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    iter = Some(SeqnumIter::new(ts, VecIter::new(Rc::new(data.clone()))));
+                    "ok\n".into()
+                }
+                "scan" => {
+                    let mut out = String::new();
+                    for command in test_case.input.trim().chars() {
+                        match command {
+                            '>' => match iter.as_mut().unwrap().next() {
+                                None => {
+                                    out.push_str("> eof");
+                                }
+                                Some((k, v)) => {
+                                    out.push_str(&format!("> {}={}", k, v));
+                                }
+                            },
+                            ')' => match iter.as_mut().unwrap().peek() {
+                                None => {
+                                    out.push_str(") eof");
+                                }
+                                Some((k, v)) => {
+                                    out.push_str(&format!(") {}={}", k, v));
+                                }
+                            },
+                            '<' => match iter.as_mut().unwrap().prev() {
+                                None => {
+                                    out.push_str("< eof");
+                                }
+                                Some((k, v)) => {
+                                    out.push_str(&format!("< {}={}", k, v));
+                                }
+                            },
+                            '(' => match iter.as_mut().unwrap().peek_prev() {
+                                None => {
+                                    out.push_str("( eof");
+                                }
+                                Some((k, v)) => {
+                                    out.push_str(&format!("( {}={}", k, v));
+                                }
+                            },
+
+                            _ => panic!("unhandled: {}", command),
+                        }
+                        out.push_str(&format!(" ({:?})\n", iter.as_ref().unwrap().state));
+                    }
+                    out
+                }
+                "seek-ge" => {
+                    let key = test_case
+                        .args
+                        .get("key")
+                        .expect("seek-ge requires key argument")
+                        .get(0)
+                        .unwrap();
+                    iter.as_mut().unwrap().seek_ge(key);
+                    "ok\n".into()
+                }
+                _ => {
+                    panic!("unhandled");
+                }
+            })
+        })
     }
 }
 
@@ -611,15 +604,27 @@ where
         }
     }
 
-    pub fn insert(&mut self, s: usize, k: K, v: V) {
+    fn insert_val(&mut self, s: usize, k: K, v: Option<V>) {
         if s <= self.prev_seqnum {
             panic!("seqnums must be strictly increasing")
         }
         self.prev_seqnum = s;
-        self.entries.push(Rc::new(vec![((k, s), Some(v))]));
+        self.entries.push(Rc::new(vec![((k, s), v)]));
         for i in (0..(self.entries.len() - 1)).rev() {
             self.maybe_fix_at(i);
         }
+    }
+
+    pub fn insert(&mut self, s: usize, k: K, v: V) {
+        self.insert_val(s, k, Some(v))
+    }
+
+    pub fn delete(&mut self, s: usize, k: K) {
+        self.insert_val(s, k, None)
+    }
+
+    pub fn scan(&self) -> MergingIter<VecIter<(K, usize), Option<V>>, (K, usize), Option<V>> {
+        MergingIter::new(self.entries.iter().map(|e| VecIter::new(e.clone())))
     }
 
     pub fn read_at(

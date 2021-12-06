@@ -23,6 +23,18 @@ read ts=2
 ok
 
 scan
+>)<<
+----
+> baz=baz2 (FwdEq)
+) foo=foo2 (FwdBehind)
+< baz=baz2 (RevEq)
+< eof (AtStart)
+
+read ts=2
+----
+ok
+
+scan
 )>))))>
 ----
 ) baz=baz2 (FwdBehind)
@@ -69,9 +81,9 @@ scan
 < foo=foo2 (RevEq)
 ) foo=foo2 (RevEq)
 < baz=baz2 (RevEq)
-( eof (RevEq)
-> baz=baz2 (RevBehind)
-< baz=baz2 (RevEq)
+( eof (AtStart)
+> baz=baz2 (FwdEq)
+< baz=baz2 (FwdBehind)
 < eof (AtStart)
 < eof (AtStart)
 

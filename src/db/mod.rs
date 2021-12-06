@@ -1,6 +1,10 @@
-use std::marker::PhantomData;
+use std::{fs::File, marker::PhantomData};
 
-use crate::memtable::{KVIter, Memtable, MergingIter, SeqnumIter, VecIter};
+use crate::{
+    log::{LogEntry, LogSet, Logger},
+    memtable::{KVIter, Memtable, MergingIter, SeqnumIter, VecIter},
+    sst::{Encode, SstWriter},
+};
 
 struct DbIterator<K, V>
 where
@@ -23,29 +27,72 @@ where
     }
 }
 
-struct Db<K, V>
+#[derive(Debug, Clone)]
+enum DBEntry<K, V>
 where
-    K: Ord,
+    K: std::fmt::Debug,
+    V: std::fmt::Debug,
+{
+    Write(usize, K, V),
+    Delete(usize, K),
+}
+
+impl<K, V> LogEntry for DBEntry<K, V>
+where
+    K: std::fmt::Debug + Clone,
+    V: std::fmt::Debug + Clone,
+{
+    fn seqnum(&self) -> usize {
+        match self {
+            DBEntry::Write(x, _, _) => *x,
+            DBEntry::Delete(x, _) => *x,
+        }
+    }
+}
+
+struct Db<K, V, L>
+where
+    K: std::fmt::Debug + Ord + Clone,
+    V: std::fmt::Debug + Clone,
+    L: Logger<DBEntry<K, V>>,
 {
     memtable: Memtable<K, V>,
+    wal_set: LogSet<DBEntry<K, V>, L>,
+    dir: String,
     next_seqnum: usize,
 }
 
-impl<K, V> Db<K, V>
+impl<K, V, L> Db<K, V, L>
 where
-    K: Ord + Default + Clone + std::fmt::Debug,
-    V: Default + Clone + std::fmt::Debug,
+    K: Ord + Default + Clone + std::fmt::Debug + Encode,
+    V: Default + Clone + std::fmt::Debug + Encode,
+    L: Logger<DBEntry<K, V>>,
 {
-    fn new() -> Self {
+    fn new(dir: String) -> Self {
         Self {
             memtable: Memtable::new(),
+            wal_set: LogSet::open_dir(dir.clone()),
+            dir,
             next_seqnum: 0,
         }
     }
 
     fn insert(&mut self, k: K, v: V) {
         self.next_seqnum += 1;
+        // TODO: this clone is probably not needed.
+        self.wal_set
+            .current()
+            .write(DBEntry::Write(self.next_seqnum, k.clone(), v.clone()));
         self.memtable.insert(self.next_seqnum, k, v);
+    }
+
+    fn delete(&mut self, k: K) {
+        self.next_seqnum += 1;
+        // TODO: this clone is probably not needed.
+        self.wal_set
+            .current()
+            .write(DBEntry::Delete(self.next_seqnum, k.clone()));
+        self.memtable.delete(self.next_seqnum, k);
     }
 
     fn scan(&mut self) -> DbIterator<K, V> {
@@ -55,23 +102,48 @@ where
             _marker: PhantomData,
         }
     }
+
+    fn flush_memtable(&mut self) -> anyhow::Result<String> {
+        let scan = self.memtable.scan();
+
+        // TODO: use the real path join.
+        // TODO: include the lower bound?
+        let sst_fname = format!("{}/sst{}.sst", self.dir, self.next_seqnum);
+        let writer = SstWriter::new(scan, &sst_fname);
+        writer.write()?;
+        Ok(sst_fname)
+    }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::{db::DBEntry, log::MockLog, sst::SstReader};
+
     use super::Db;
 
     #[test]
     fn insert() {
-        let mut db: Db<String, String> = Db::new();
+        let mut db: Db<String, String, MockLog<DBEntry<String, String>>> =
+            Db::new("db_data/".to_owned());
         db.insert("foo".into(), "bar1".into());
         db.insert("foo".into(), "bar2".into());
         let iter1 = db.scan();
         db.insert("foo".into(), "bar3".into());
 
         let iter2 = db.scan();
+        db.delete("foo".into());
+        let iter3 = db.scan();
 
         println!("x = {:?}", iter1.collect::<Vec<_>>());
         println!("x = {:?}", iter2.collect::<Vec<_>>());
+        println!("x = {:?}", iter3.collect::<Vec<_>>());
+
+        let fname = db.flush_memtable().unwrap();
+
+        let mut reader: SstReader<(String, usize), Option<String>> =
+            SstReader::load(fname.as_str()).unwrap();
+        while let Some(v) = reader.next().unwrap() {
+            println!("{:?}", v);
+        }
     }
 }

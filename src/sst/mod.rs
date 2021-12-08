@@ -1,6 +1,6 @@
 use std::{
     fs::{File, OpenOptions},
-    io::{BufWriter, Read, Seek, SeekFrom, Write},
+    io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write},
     marker::PhantomData,
 };
 
@@ -198,7 +198,6 @@ where
     prev_val: Vec<u8>,
     scratch: Vec<u8>,
     buf: Vec<u8>,
-    written: usize,
 }
 
 impl<W> Writer<W>
@@ -211,27 +210,11 @@ where
             prev_val: Vec::with_capacity(1024),
             buf: Vec::with_capacity(1024),
             scratch: Vec::with_capacity(1024),
-            written: 0,
         }
-    }
-
-    fn flush(&mut self) -> anyhow::Result<()> {
-        self.w.flush()?;
-        Ok(())
-    }
-
-    fn location(&self) -> usize {
-        self.written
     }
 
     fn reset(&mut self) {
         self.prev_val.clear();
-    }
-
-    fn write_bytes_raw(&mut self, buf: &[u8]) -> anyhow::Result<()> {
-        self.written += buf.len();
-        self.w.write_all(buf)?;
-        Ok(())
     }
 
     fn write<T: Encode>(&mut self, t: &T) -> anyhow::Result<()> {
@@ -246,11 +229,11 @@ where
             }
         }
 
-        self.write_bytes_raw(&((self.buf.len() - shared_prefix_len) as u32).to_le_bytes())?;
-        self.write_bytes_raw(&(shared_prefix_len as u32).to_le_bytes())?;
-        let to_write = &self.buf[shared_prefix_len..];
-        self.written += to_write.len();
-        self.w.write_all(to_write)?;
+        self.w
+            .write_all(&((self.buf.len() - shared_prefix_len) as u32).to_le_bytes())?;
+        self.w
+            .write_all(&(shared_prefix_len as u32).to_le_bytes())?;
+        self.w.write_all(&self.buf[shared_prefix_len..])?;
 
         std::mem::swap(&mut self.buf, &mut self.prev_val);
 
@@ -266,6 +249,18 @@ struct Reader<T: Decode, R: Seek + Read> {
     buf: Vec<u8>,
     scratch: Vec<u8>,
     _marker: PhantomData<T>,
+}
+
+impl<T, R> Iterator for Reader<T, R>
+where
+    T: Decode,
+    R: Seek + Read,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.next().unwrap()
+    }
 }
 
 impl<T, R> Reader<T, R>
@@ -316,17 +311,53 @@ where
 
 pub struct SstReader<K, V>
 where
-    (K, V): Decode,
+    K: Decode + Default,
+    V: Decode + Default,
 {
     reader: Reader<(K, V), File>,
+    index: Vec<(K, usize)>,
+    buffer: (K, V),
     _marker: PhantomData<(K, V)>,
+}
+
+impl<K, V> KVIter<K, V> for SstReader<K, V>
+where
+    K: Ord + Decode + Default + std::fmt::Debug,
+    V: Decode + Default,
+{
+    fn next(&mut self) -> Option<(&K, &V)> {
+        if let Some(kv) = self.reader.next().unwrap() {
+            self.buffer = kv;
+            Some((&self.buffer.0, &self.buffer.1))
+        } else {
+            None
+        }
+    }
+
+    fn peek(&mut self) -> Option<(&K, &V)> {
+        todo!()
+    }
+
+    fn prev(&mut self) -> Option<(&K, &V)> {
+        todo!()
+    }
+
+    fn peek_prev(&mut self) -> Option<(&K, &V)> {
+        todo!()
+    }
+
+    fn seek_ge(&mut self, key: &K) {
+        todo!()
+    }
 }
 
 impl<K, V> SstReader<K, V>
 where
-    (K, V): Decode,
+    K: Decode + Default + std::fmt::Debug,
+    V: Decode + Default,
 {
     pub fn load(fname: &str) -> anyhow::Result<Self> {
+        // TODO: check if already exists and fail if yes.
         let mut file = OpenOptions::new().read(true).open(fname)?;
 
         file.seek(SeekFrom::End(-8))?;
@@ -341,17 +372,18 @@ where
         file.seek(SeekFrom::End(-8 - (index_len as i64)))?;
         let mut index_data: Vec<_> = (0..index_len).map(|_| 0).collect();
         file.read_exact(&mut index_data)?;
+        let index: Reader<(K, usize), _> = Reader::new(Cursor::new(index_data), index_len);
+
+        let index: Vec<_> = index.collect();
 
         file.seek(SeekFrom::Start(0))?;
 
         Ok(SstReader {
             reader: Reader::new(file, data_len),
+            buffer: Default::default(),
+            index,
             _marker: PhantomData,
         })
-    }
-
-    pub fn next(&mut self) -> anyhow::Result<Option<(K, V)>> {
-        self.reader.next()
     }
 }
 
@@ -361,9 +393,13 @@ where
     K: Ord + Encode,
     V: Encode,
 {
-    writer: Writer<File>,
+    file: File,
     it: I,
     _marker: PhantomData<(K, V)>,
+}
+
+struct BlockHandle<K> {
+    start_key: K,
 }
 
 impl<I, K, V> SstWriter<I, K, V>
@@ -375,47 +411,55 @@ where
     pub fn new(it: I, fname: &str) -> Self {
         let file = OpenOptions::new()
             .write(true)
+            .truncate(true)
             .create(true)
             .open(fname)
             .unwrap();
-        let writer = Writer::new(file);
         SstWriter {
-            writer,
+            file,
             it,
             _marker: PhantomData,
         }
+    }
+
+    // TODO: reuse block handle struct?
+    fn build_block(&mut self, data: &mut Vec<u8>) -> anyhow::Result<()> {
+        let mut writer = Writer::new(Cursor::new(data));
+        while let Some((k, v)) = self.it.next() {
+            writer.write(&(k, v))?;
+        }
+
+        Ok(())
     }
 
     pub fn write(mut self) -> anyhow::Result<()> {
         let mut index = Vec::new();
         let mut index_writer = Writer::new(&mut index);
 
-        let mut written = 0;
+        let mut bytes_written = 0;
 
-        while let Some(kv) = self.it.next() {
-            written += 1;
-            // println!("writing {}", written);
+        let mut block_buffer = Vec::new();
 
-            if written >= RESET_INTERVAL {
-                index_writer.write(&(kv.0, self.writer.location()))?;
-                written = 0;
-                self.writer.reset();
-            }
+        while let Some((header_key, _)) = self.it.peek() {
+            let index_entry = (header_key, bytes_written);
+            index_writer.write(&index_entry)?;
 
-            self.writer.write(&kv)?;
+            self.build_block(&mut block_buffer)?;
+            self.file.write_all(&block_buffer)?;
+            bytes_written += block_buffer.len();
+
+            block_buffer.clear();
         }
 
-        let data_length = self.writer.location() as u32;
+        let data_length = bytes_written;
 
         // Write the index block.
-        self.writer.write_bytes_raw(&index)?;
+        self.file.write_all(&index)?;
         // Write the length of the data block.
-        self.writer.write_bytes_raw(&data_length.to_le_bytes())?;
+        self.file.write_all(&(data_length as u32).to_le_bytes())?;
         // Write the length of the index block.
-        self.writer
-            .write_bytes_raw(&(index.len() as u32).to_le_bytes())?;
+        self.file.write_all(&(index.len() as u32).to_le_bytes())?;
 
-        self.writer.flush()?;
         Ok(())
     }
 }

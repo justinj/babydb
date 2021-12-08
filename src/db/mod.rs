@@ -117,7 +117,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::{db::DBEntry, log::MockLog, sst::SstReader};
+    use crate::{db::DBEntry, log::MockLog, memtable::KVIter, sst::SstReader};
 
     use super::Db;
 
@@ -125,7 +125,7 @@ mod test {
     fn insert() {
         let mut db: Db<String, String, MockLog<DBEntry<String, String>>> =
             Db::new("db_data/".to_owned());
-        for i in 0..1000 {
+        for i in 0..20 {
             db.insert("foo".into(), format!("bar{}", i));
         }
 
@@ -133,7 +133,7 @@ mod test {
 
         let mut reader: SstReader<(String, usize), Option<String>> =
             SstReader::load(fname.as_str()).unwrap();
-        while let Some(v) = reader.next().unwrap() {
+        while let Some(v) = reader.next() {
             println!("{:?}", v);
         }
     }

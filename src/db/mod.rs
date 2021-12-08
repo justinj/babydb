@@ -3,7 +3,7 @@ use std::{fs::File, marker::PhantomData};
 use crate::{
     log::{LogEntry, LogSet, Logger},
     memtable::{KVIter, Memtable, MergingIter, SeqnumIter, VecIter},
-    sst::{Encode, SstWriter},
+    sst::{writer::SstWriter, Encode},
 };
 
 struct DbIterator<K, V>
@@ -117,7 +117,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::{db::DBEntry, log::MockLog, memtable::KVIter, sst::SstReader};
+    use crate::{db::DBEntry, log::MockLog, memtable::KVIter, sst::reader::SstReader};
 
     use super::Db;
 

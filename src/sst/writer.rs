@@ -6,9 +6,9 @@ use std::{
 
 use crate::memtable::KVIter;
 
-use super::Encode;
+use super::{Encode, KeyWriter};
 
-const RESET_INTERVAL: usize = 10;
+const RESET_INTERVAL: usize = 2;
 
 struct Writer<W>
 where
@@ -17,7 +17,6 @@ where
     w: W,
     prev_val: Vec<u8>,
     scratch: Vec<u8>,
-    buf: Vec<u8>,
 }
 
 impl<W> Writer<W>
@@ -28,7 +27,6 @@ where
         Writer {
             w,
             prev_val: Vec::with_capacity(1024),
-            buf: Vec::with_capacity(1024),
             scratch: Vec::with_capacity(1024),
         }
     }
@@ -38,26 +36,31 @@ where
     }
 
     fn write<T: Encode>(&mut self, t: &T) -> anyhow::Result<()> {
-        t.write_bytes(&mut self.buf, &mut self.scratch);
+        // TODO: reuse this KeyWriter.
+        let mut kw = KeyWriter::new();
+        t.write_bytes(&mut kw);
 
-        let n = std::cmp::min(self.prev_val.len(), self.buf.len());
+        // TODO: do not allocate a new vec here.
+        let mut buf = kw.replace(Vec::new());
+
+        let n = std::cmp::min(self.prev_val.len(), buf.len());
         let mut shared_prefix_len = n;
         for i in 0..n {
-            if self.prev_val[i] != self.buf[i] {
+            if self.prev_val[i] != buf[i] {
                 shared_prefix_len = i;
                 break;
             }
         }
 
         self.w
-            .write_all(&((self.buf.len() - shared_prefix_len) as u32).to_le_bytes())?;
+            .write_all(&((buf.len() - shared_prefix_len) as u32).to_le_bytes())?;
         self.w
             .write_all(&(shared_prefix_len as u32).to_le_bytes())?;
-        self.w.write_all(&self.buf[shared_prefix_len..])?;
+        self.w.write_all(&buf[shared_prefix_len..])?;
 
-        std::mem::swap(&mut self.buf, &mut self.prev_val);
+        std::mem::swap(&mut buf, &mut self.prev_val);
 
-        self.buf.clear();
+        buf.clear();
         Ok(())
     }
 }
@@ -76,7 +79,7 @@ where
 impl<I, K, V> SstWriter<I, K, V>
 where
     I: KVIter<K, V>,
-    K: Ord + Encode,
+    K: Ord + Encode + Clone,
     V: Encode,
 {
     pub fn new(it: I, fname: &str) -> Self {
@@ -93,11 +96,15 @@ where
         }
     }
 
-    // TODO: reuse block handle struct?
     fn build_block(&mut self, data: &mut Vec<u8>) -> anyhow::Result<()> {
         let mut writer = Writer::new(Cursor::new(data));
+        let mut written = 0;
         while let Some((k, v)) = self.it.next() {
             writer.write(&(k, v))?;
+            written += 1;
+            if written >= RESET_INTERVAL {
+                break;
+            }
         }
 
         Ok(())
@@ -108,15 +115,18 @@ where
         let mut index_writer = Writer::new(&mut index);
 
         let mut bytes_written = 0;
-
         let mut block_buffer = Vec::new();
 
         while let Some((header_key, _)) = self.it.peek() {
-            let index_entry = (header_key, bytes_written);
-            index_writer.write(&index_entry)?;
+            // TODO: is this clone necessary?
+            let k = (*header_key).clone();
 
             self.build_block(&mut block_buffer)?;
             self.file.write_all(&block_buffer)?;
+
+            let index_entry = (k, (bytes_written as u32, block_buffer.len() as u32));
+            index_writer.write(&index_entry)?;
+
             bytes_written += block_buffer.len();
 
             block_buffer.clear();

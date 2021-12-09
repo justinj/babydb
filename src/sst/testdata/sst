@@ -1,0 +1,37 @@
+insert
+baz=baz2@2
+baz=baz3@3
+baz=baz4@4
+foo=foo1@1
+foo=foo2@2
+foo=foo3@3
+----
+ok
+
+flush
+----
+ok
+
+scan
+>>>>>><<
+----
+> ("baz", 2)=Some("baz2")
+> ("baz", 3)=Some("baz3")
+> ("baz", 4)=Some("baz4")
+> ("foo", 1)=Some("foo1")
+> ("foo", 2)=Some("foo2")
+> ("foo", 3)=Some("foo3")
+< ("foo", 3)=Some("foo3")
+< ("foo", 2)=Some("foo2")
+
+scan
+))))<)()
+----
+) ("foo", 2)=Some("foo2")
+) ("foo", 2)=Some("foo2")
+) ("foo", 2)=Some("foo2")
+) ("foo", 2)=Some("foo2")
+< ("foo", 3)=Some("foo3")
+) ("foo", 3)=Some("foo3")
+( ("foo", 2)=Some("foo2")
+) ("foo", 3)=Some("foo3")

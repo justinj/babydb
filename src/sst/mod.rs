@@ -62,48 +62,113 @@ fn test_escaping() {
     }
 }
 
+pub struct KeyWriter {
+    buf: Vec<u8>,
+}
+
+impl KeyWriter {
+    fn new() -> Self {
+        KeyWriter { buf: Vec::new() }
+    }
+
+    fn replace(&mut self, mut v: Vec<u8>) -> Vec<u8> {
+        std::mem::swap(&mut v, &mut self.buf);
+        v
+    }
+
+    fn write(&mut self, buf: &[u8]) {
+        copy_escaped(buf, &mut self.buf);
+    }
+
+    fn separator(&mut self) {
+        self.buf.extend([0x00, 0x01]);
+    }
+}
+
+// TODO: use bytes::bytes?
+// TODO: does this need to be pub?
+pub struct KeyReader {
+    buf: Vec<u8>,
+    from: usize,
+    scratch: Vec<u8>,
+}
+
+impl KeyReader {
+    fn new() -> Self {
+        KeyReader {
+            buf: Vec::new(),
+            from: 0,
+            scratch: Vec::new(),
+        }
+    }
+
+    fn load(&mut self, buf: &[u8]) {
+        self.buf.extend(buf);
+        self.from = 0;
+        self.scratch.clear();
+    }
+
+    fn next(&mut self) -> &[u8] {
+        // First, find the separator.
+        let split_position = self.buf[self.from..]
+            .windows(2)
+            .position(|x| x == SEPARATOR)
+            .unwrap_or(self.buf.len() - self.from);
+
+        self.scratch.clear();
+        copy_unescaped(
+            &self.buf[self.from..self.from + split_position],
+            &mut self.scratch,
+        );
+        self.from += split_position + 2;
+
+        &self.scratch
+    }
+}
+
 pub trait Encode: std::fmt::Debug {
-    fn write_bytes(&self, buf: &mut Vec<u8>, scratch: &mut Vec<u8>);
+    fn write_bytes(&self, kw: &mut KeyWriter);
 }
 
 pub trait Decode: Sized {
-    fn decode(buf: &[u8], scratch: &mut Vec<u8>) -> anyhow::Result<Self>;
+    fn decode(kr: &mut KeyReader) -> anyhow::Result<Self>;
 }
 
 impl Encode for String {
-    fn write_bytes(&self, buf: &mut Vec<u8>, _scratch: &mut Vec<u8>) {
-        buf.extend(self.as_bytes())
+    fn write_bytes(&self, kw: &mut KeyWriter) {
+        kw.write(self.as_bytes())
     }
 }
 
 impl Decode for String {
-    fn decode(buf: &[u8], _scratch: &mut Vec<u8>) -> anyhow::Result<Self> {
-        let result = String::from_utf8(buf.to_vec())?;
+    fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
+        let result = String::from_utf8(kr.next().to_vec())?;
         Ok(result)
     }
 }
 
 impl Encode for usize {
-    fn write_bytes(&self, buf: &mut Vec<u8>, _scratch: &mut Vec<u8>) {
-        buf.extend(self.to_ne_bytes())
+    fn write_bytes(&self, kw: &mut KeyWriter) {
+        kw.write(&self.to_le_bytes())
     }
 }
 
 impl Decode for usize {
-    fn decode(buf: &[u8], _scratch: &mut Vec<u8>) -> anyhow::Result<Self> {
-        Ok(Self::from_le_bytes(buf.try_into()?))
+    fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
+        let next = kr.next();
+        Ok(Self::from_le_bytes(next.try_into()?))
     }
 }
 
 impl Encode for u32 {
-    fn write_bytes(&self, buf: &mut Vec<u8>, scratch: &mut Vec<u8>) {
-        buf.extend(self.to_ne_bytes())
+    fn write_bytes(&self, kw: &mut KeyWriter) {
+        kw.write(&self.to_le_bytes())
     }
 }
 
 impl Decode for u32 {
-    fn decode(buf: &[u8], _scratch: &mut Vec<u8>) -> anyhow::Result<Self> {
-        Ok(Self::from_le_bytes(buf.try_into()?))
+    fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
+        Ok(Self::from_le_bytes(kr.next().try_into()?))
     }
 }
 
@@ -111,8 +176,8 @@ impl<A> Encode for &A
 where
     A: Encode,
 {
-    fn write_bytes(&self, buf: &mut Vec<u8>, scratch: &mut Vec<u8>) {
-        (*self).write_bytes(buf, scratch)
+    fn write_bytes(&self, kw: &mut KeyWriter) {
+        (*self).write_bytes(kw)
     }
 }
 
@@ -121,14 +186,10 @@ where
     A: Encode,
     B: Encode,
 {
-    fn write_bytes(&self, buf: &mut Vec<u8>, scratch: &mut Vec<u8>) {
-        self.0.write_bytes(buf, scratch);
-        scratch.clear();
-        std::mem::swap(buf, scratch);
-        copy_escaped(scratch, buf);
-        scratch.clear();
-        buf.extend(SEPARATOR);
-        self.1.write_bytes(buf, scratch);
+    fn write_bytes(&self, kw: &mut KeyWriter) {
+        self.0.write_bytes(kw);
+        kw.separator();
+        self.1.write_bytes(kw);
     }
 }
 
@@ -137,23 +198,10 @@ where
     A: Decode,
     B: Decode,
 {
-    fn decode(buf: &[u8], scratch: &mut Vec<u8>) -> anyhow::Result<Self> {
-        // First, find the separator.
-        let split_position = buf
-            .windows(2)
-            .position(|x| x == SEPARATOR)
-            .expect("tuple should have separator");
-
-        scratch.clear();
-        copy_unescaped(&buf[0..split_position], scratch);
-
-        // TODO: can we get rid of the Vec::new()? As long as tuples are well-formed it shouldn't
-        // actually allocate, I think...
-        let fst = A::decode(scratch, &mut Vec::new())?;
-        scratch.clear();
-        let snd = B::decode(&buf[split_position + 2..], scratch)?;
-
-        Ok((fst, snd))
+    fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
+        let a = A::decode(kr)?;
+        let b = B::decode(kr)?;
+        Ok((a, b))
     }
 }
 
@@ -161,14 +209,16 @@ impl<A> Encode for Option<A>
 where
     A: Encode,
 {
-    fn write_bytes(&self, buf: &mut Vec<u8>, scratch: &mut Vec<u8>) {
+    fn write_bytes(&self, kw: &mut KeyWriter) {
         match self {
             None => {
-                buf.push(0);
+                // TODO: necessary?
+                kw.write(&[0]);
             }
             Some(v) => {
-                buf.push(1);
-                v.write_bytes(buf, scratch);
+                kw.write(&[1]);
+                kw.separator();
+                v.write_bytes(kw);
             }
         }
     }
@@ -178,10 +228,11 @@ impl<A> Decode for Option<A>
 where
     A: Decode,
 {
-    fn decode(buf: &[u8], scratch: &mut Vec<u8>) -> anyhow::Result<Self> {
+    fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
+        let buf = kr.next();
         match buf[0] {
             0 => Ok(None),
-            1 => Ok(Some(A::decode(&buf[1..], scratch)?)),
+            1 => Ok(Some(A::decode(kr)?)),
             _ => panic!(),
         }
     }

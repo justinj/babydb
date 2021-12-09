@@ -117,9 +117,106 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::{db::DBEntry, log::MockLog, memtable::KVIter, sst::reader::SstReader};
+    use std::rc::Rc;
+
+    use crate::{
+        db::DBEntry,
+        log::MockLog,
+        memtable::{KVIter, VecIter},
+        sst::{reader::SstReader, writer::SstWriter},
+    };
 
     use super::Db;
+
+    #[test]
+    fn test_sst_iter() {
+        datadriven::walk("src/sst/testdata/", |f| {
+            let mut data = Vec::new();
+            let mut reader: Option<SstReader<(String, usize), Option<String>>> = None;
+            f.run(|test_case| match test_case.directive.as_str() {
+                "insert" => {
+                    for line in test_case.input.lines() {
+                        let eq_idx = line.find('=').unwrap();
+                        let at_idx = line.find('@').unwrap();
+                        let key = line[0..eq_idx].to_owned();
+                        let val = line[eq_idx + 1..at_idx].to_owned();
+                        let seqnum: usize = line[at_idx + 1..].parse().unwrap();
+                        if val == "<DELETE>" {
+                            data.push(((key, seqnum), None));
+                        } else {
+                            data.push(((key, seqnum), Some(val)));
+                        }
+                    }
+                    data.sort();
+                    "ok\n".into()
+                }
+                "flush" => {
+                    let sst_fname = "/tmp/test_sst.sst";
+                    let writer = SstWriter::new(VecIter::new(Rc::new(data.clone())), sst_fname);
+                    writer.write().unwrap();
+                    reader = Some(SstReader::load(sst_fname).unwrap());
+                    "ok\n".into()
+                }
+                "scan" => {
+                    let mut out = String::new();
+                    for command in test_case.input.trim().chars() {
+                        match command {
+                            '>' => match reader.as_mut().unwrap().next() {
+                                None => {
+                                    out.push_str("> eof");
+                                }
+                                Some((k, v)) => {
+                                    out.push_str(&format!("> {:?}={:?}", k, v));
+                                }
+                            },
+                            ')' => match reader.as_mut().unwrap().peek() {
+                                None => {
+                                    out.push_str(") eof");
+                                }
+                                Some((k, v)) => {
+                                    out.push_str(&format!(") {:?}={:?}", k, v));
+                                }
+                            },
+                            '<' => match reader.as_mut().unwrap().prev() {
+                                None => {
+                                    out.push_str("< eof");
+                                }
+                                Some((k, v)) => {
+                                    out.push_str(&format!("< {:?}={:?}", k, v));
+                                }
+                            },
+                            '(' => match reader.as_mut().unwrap().peek_prev() {
+                                None => {
+                                    out.push_str("( eof");
+                                }
+                                Some((k, v)) => {
+                                    out.push_str(&format!("( {:?}={:?}", k, v));
+                                }
+                            },
+
+                            _ => panic!("unhandled: {}", command),
+                        }
+                        out.push('\n');
+                    }
+                    out
+                }
+                // TODO: oh, we'll get to you.
+                // "seek-ge" => {
+                //     let key = test_case
+                //         .args
+                //         .get("key")
+                //         .expect("seek-ge requires key argument")
+                //         .get(0)
+                //         .unwrap();
+                //     iter.as_mut().unwrap().seek_ge(key);
+                //     "ok\n".into()
+                // }
+                _ => {
+                    panic!("unhandled");
+                }
+            })
+        })
+    }
 
     #[test]
     fn insert() {
@@ -134,6 +231,9 @@ mod test {
         let mut reader: SstReader<(String, usize), Option<String>> =
             SstReader::load(fname.as_str()).unwrap();
         while let Some(v) = reader.next() {
+            println!("{:?}", v);
+        }
+        while let Some(v) = reader.prev() {
             println!("{:?}", v);
         }
     }

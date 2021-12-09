@@ -270,7 +270,7 @@ pub struct VecIter<K, V> {
 }
 
 impl<K, V> VecIter<K, V> {
-    fn new(v: Rc<Vec<(K, V)>>) -> Self {
+    pub fn new(v: Rc<Vec<(K, V)>>) -> Self {
         Self {
             idx: 0,
             contents: v,

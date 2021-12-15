@@ -1,10 +1,11 @@
+#![allow(dead_code)]
 use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 
 pub trait LogEntry: std::fmt::Debug + Clone {
     fn seqnum(&self) -> usize;
 }
 
-struct Frozen<E, L> {
+pub struct Frozen<E, L> {
     l: L,
     _marker: PhantomData<E>,
 }

@@ -1,23 +1,26 @@
-use std::{fs::File, marker::PhantomData};
+#![allow(dead_code)]
+use std::{cell::RefCell, marker::PhantomData, rc::Rc};
 
 use crate::{
     log::{LogEntry, LogSet, Logger},
-    memtable::{KVIter, Memtable, MergingIter, SeqnumIter, VecIter},
-    sst::{writer::SstWriter, Encode},
+    memtable::{KVIter, Memtable, MergingIter, SeqnumIter},
+    sst::{reader::SstReader, writer::SstWriter, Decode, Encode},
 };
 
-struct DbIterator<K, V>
+struct DbIterator<K, V, I>
 where
     K: Ord,
+    I: KVIter<K, V>,
 {
-    iter: SeqnumIter<MergingIter<VecIter<(K, usize), Option<V>>, (K, usize), Option<V>>, K, V>,
+    iter: I,
     _marker: PhantomData<(K, V)>,
 }
 
-impl<K, V> Iterator for DbIterator<K, V>
+impl<K, V, I> Iterator for DbIterator<K, V, I>
 where
     K: Ord + Default + Clone,
     V: Default + Clone,
+    I: KVIter<K, V>,
 {
     type Item = (K, V);
 
@@ -50,13 +53,37 @@ where
     }
 }
 
+#[derive(Debug)]
+struct Layout<K, V>
+where
+    K: Ord,
+{
+    active_memtable: Memtable<K, V>,
+    memtables: Vec<Rc<RefCell<Memtable<K, V>>>>,
+    ssts: Vec<String>,
+}
+
+impl<K, V> Layout<K, V>
+where
+    K: Ord + Default,
+    V: Default,
+{
+    fn new(memtable: Memtable<K, V>) -> Self {
+        Layout {
+            active_memtable: memtable,
+            memtables: Vec::new(),
+            ssts: Vec::new(),
+        }
+    }
+}
+
 struct Db<K, V, L>
 where
     K: std::fmt::Debug + Ord + Clone,
     V: std::fmt::Debug + Clone,
     L: Logger<DBEntry<K, V>>,
 {
-    memtable: Memtable<K, V>,
+    layout: Layout<K, V>,
     wal_set: LogSet<DBEntry<K, V>, L>,
     dir: String,
     next_seqnum: usize,
@@ -64,13 +91,13 @@ where
 
 impl<K, V, L> Db<K, V, L>
 where
-    K: Ord + Default + Clone + std::fmt::Debug + Encode,
-    V: Default + Clone + std::fmt::Debug + Encode,
+    K: Ord + Default + Clone + std::fmt::Debug + Decode + Encode,
+    V: Default + Clone + std::fmt::Debug + Decode + Encode,
     L: Logger<DBEntry<K, V>>,
 {
     fn new(dir: String) -> Self {
         Self {
-            memtable: Memtable::new(),
+            layout: Layout::new(Memtable::new()),
             wal_set: LogSet::open_dir(dir.clone()),
             dir,
             next_seqnum: 0,
@@ -83,7 +110,7 @@ where
         self.wal_set
             .current()
             .write(DBEntry::Write(self.next_seqnum, k.clone(), v.clone()));
-        self.memtable.insert(self.next_seqnum, k, v);
+        self.layout.active_memtable.insert(self.next_seqnum, k, v);
     }
 
     fn delete(&mut self, k: K) {
@@ -92,32 +119,50 @@ where
         self.wal_set
             .current()
             .write(DBEntry::Delete(self.next_seqnum, k.clone()));
-        self.memtable.delete(self.next_seqnum, k);
+        self.layout.active_memtable.delete(self.next_seqnum, k);
     }
 
-    fn scan(&mut self) -> DbIterator<K, V> {
+    fn scan(&mut self) -> DbIterator<K, V, impl KVIter<K, V>>
+    where
+        K: 'static,
+        V: 'static,
+    {
+        let tab = self.layout.active_memtable.scan();
+        let sst_merge: MergingIter<SstReader<(K, usize), Option<V>>, _, _> = MergingIter::new(
+            self.layout
+                .ssts
+                .iter()
+                .map(|fname| SstReader::load(fname.as_str()).unwrap()),
+        );
+        let lhs: Box<dyn KVIter<(K, usize), Option<V>>> = Box::new(sst_merge);
+        let merged = MergingIter::new([Box::new(tab), lhs]);
+        let scan = SeqnumIter::new(self.next_seqnum, merged);
         self.next_seqnum += 1;
         DbIterator {
-            iter: self.memtable.read_at(self.next_seqnum),
+            iter: scan,
             _marker: PhantomData,
         }
     }
 
     fn flush_memtable(&mut self) -> anyhow::Result<String> {
-        let scan = self.memtable.scan();
+        let scan = self.layout.active_memtable.scan();
 
         // TODO: use the real path join.
         // TODO: include the lower bound?
         let sst_fname = format!("{}/sst{}.sst", self.dir, self.next_seqnum);
         let writer = SstWriter::new(scan, &sst_fname);
         writer.write()?;
+
+        self.layout = Layout::new(Memtable::new());
+        self.layout.ssts.push(sst_fname.clone());
+
         Ok(sst_fname)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::rc::Rc;
+    use std::{collections::HashMap, rc::Rc};
 
     use crate::{
         db::DBEntry,
@@ -219,22 +264,49 @@ mod test {
     }
 
     #[test]
+    fn random_inserts() {
+        let map = HashMap::new();
+        let mut db: Db<String, String, MockLog<DBEntry<String, String>>> =
+            Db::new("db_data/".to_owned());
+
+        let mut rng = rand::new();
+
+        for i in 0..1000 {
+            rng.next();
+            db.insert(format!("sstkey{}", i), format!("bar{}", i));
+        }
+
+        let _fname = db.flush_memtable().unwrap();
+
+        for i in 10..20 {
+            db.insert(format!("memkey{}", i), format!("bar{}", i));
+        }
+
+        let iter = db.scan();
+
+        for k in iter {
+            println!("{:?}", k);
+        }
+    }
+
+    #[test]
     fn insert() {
         let mut db: Db<String, String, MockLog<DBEntry<String, String>>> =
             Db::new("db_data/".to_owned());
-        for i in 0..20 {
-            db.insert("foo".into(), format!("bar{}", i));
+        for i in 0..10 {
+            db.insert(format!("sstkey{}", i), format!("bar{}", i));
         }
 
-        let fname = db.flush_memtable().unwrap();
+        let _fname = db.flush_memtable().unwrap();
 
-        let mut reader: SstReader<(String, usize), Option<String>> =
-            SstReader::load(fname.as_str()).unwrap();
-        while let Some(v) = reader.next() {
-            println!("{:?}", v);
+        for i in 10..20 {
+            db.insert(format!("memkey{}", i), format!("bar{}", i));
         }
-        while let Some(v) = reader.prev() {
-            println!("{:?}", v);
+
+        let iter = db.scan();
+
+        for k in iter {
+            println!("{:?}", k);
         }
     }
 }

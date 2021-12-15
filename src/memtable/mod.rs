@@ -2,7 +2,7 @@
 
 use std::{marker::PhantomData, rc::Rc};
 
-pub trait KVIter<K, V>: Sized
+pub trait KVIter<K, V>
 where
     K: Ord,
 {
@@ -14,6 +14,27 @@ where
     // Positions the iterator to the left of the first location the key is >=
     // to.
     fn seek_ge(&mut self, key: &K);
+}
+
+impl<K, V, T: KVIter<K, V> + ?Sized> KVIter<K, V> for Box<T>
+where
+    K: Ord,
+{
+    fn next(&mut self) -> Option<(&K, &V)> {
+        (**self).next()
+    }
+    fn prev(&mut self) -> Option<(&K, &V)> {
+        (**self).prev()
+    }
+    fn peek(&mut self) -> Option<(&K, &V)> {
+        (**self).peek()
+    }
+    fn peek_prev(&mut self) -> Option<(&K, &V)> {
+        (**self).peek_prev()
+    }
+    fn seek_ge(&mut self, key: &K) {
+        (**self).seek_ge(key)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -43,7 +64,7 @@ where
     V: Default + Clone,
     I: KVIter<(K, usize), Option<V>>,
 {
-    fn new(seqnum: usize, iter: I) -> Self {
+    pub fn new(seqnum: usize, iter: I) -> Self {
         SeqnumIter {
             state: PhysicalState::AtStart,
             iter,
@@ -343,7 +364,7 @@ where
     K: Ord,
     I: KVIter<K, V>,
 {
-    fn new<J>(j: J) -> Self
+    pub fn new<J>(j: J) -> Self
     where
         J: IntoIterator<Item = I>,
     {

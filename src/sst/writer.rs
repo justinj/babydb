@@ -16,7 +16,6 @@ where
 {
     w: W,
     prev_val: Vec<u8>,
-    scratch: Vec<u8>,
 }
 
 impl<W> Writer<W>
@@ -27,10 +26,10 @@ where
         Writer {
             w,
             prev_val: Vec::with_capacity(1024),
-            scratch: Vec::with_capacity(1024),
         }
     }
 
+    #[allow(unused)]
     fn reset(&mut self) {
         self.prev_val.clear();
     }
@@ -45,8 +44,8 @@ where
 
         let n = std::cmp::min(self.prev_val.len(), buf.len());
         let mut shared_prefix_len = n;
-        for i in 0..n {
-            if self.prev_val[i] != buf[i] {
+        for (i, item) in buf.iter().enumerate().take(n) {
+            if self.prev_val[i] != *item {
                 shared_prefix_len = i;
                 break;
             }

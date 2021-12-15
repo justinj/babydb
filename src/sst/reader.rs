@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::{
     fs::{File, OpenOptions},
     io::{Cursor, Read, Seek, SeekFrom},
@@ -209,7 +210,6 @@ where
                 if self.current_block.peek().is_some() {
                     self.current_block.next()
                 } else if !self.next_block().unwrap() {
-                    self.prev_block().unwrap();
                     None
                 } else {
                     self.current_block.next()
@@ -234,7 +234,6 @@ where
                 if self.current_block.peek().is_some() {
                     self.current_block.peek()
                 } else if !self.next_block().unwrap() {
-                    self.prev_block().unwrap();
                     None
                 } else {
                     self.current_block.peek()
@@ -251,7 +250,6 @@ where
                 if self.current_block.peek_prev().is_some() {
                     self.current_block.prev()
                 } else if !self.prev_block().unwrap() {
-                    self.next_block().unwrap();
                     None
                 } else {
                     self.current_block.prev()
@@ -268,7 +266,6 @@ where
                 if self.current_block.peek_prev().is_some() {
                     self.current_block.peek_prev()
                 } else if !self.prev_block().unwrap() {
-                    self.next_block().unwrap();
                     None
                 } else {
                     self.current_block.peek_prev()
@@ -277,7 +274,7 @@ where
         }
     }
 
-    fn seek_ge(&mut self, key: &K) {
+    fn seek_ge(&mut self, _key: &K) {
         // TODO: oh, we'll get to you.
         todo!()
     }
@@ -324,7 +321,8 @@ where
         file.seek(SeekFrom::End(-8))?;
         let mut buf = [0_u8; 4];
         file.read_exact(&mut buf)?;
-        let data_len = u32::from_le_bytes(buf);
+        // TODO: do we need this?
+        let _data_len = u32::from_le_bytes(buf);
 
         file.seek(SeekFrom::End(-4))?;
         file.read_exact(&mut buf)?;

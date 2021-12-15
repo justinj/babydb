@@ -290,7 +290,11 @@ pub struct VecIter<K, V> {
     contents: Rc<Vec<(K, V)>>,
 }
 
-impl<K, V> VecIter<K, V> {
+impl<K, V> VecIter<K, V>
+where
+    K: std::fmt::Debug,
+    V: std::fmt::Debug,
+{
     pub fn new(v: Rc<Vec<(K, V)>>) -> Self {
         Self {
             idx: 0,
@@ -380,12 +384,12 @@ where
         for (idx, it) in self.iters.iter_mut().enumerate() {
             match lowest {
                 None => {
-                    lowest = it.peek().map(|kv| (idx, kv));
+                    lowest = it.peek().map(|(k, _v)| (idx, k));
                 }
-                Some((_, (k, v))) => {
+                Some((_, k)) => {
                     if let Some((k2, _)) = it.peek() {
                         if k2 < k {
-                            lowest = Some((idx, (k, v)));
+                            lowest = Some((idx, k2));
                         }
                     }
                 }

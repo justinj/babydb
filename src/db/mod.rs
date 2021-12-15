@@ -59,21 +59,23 @@ where
     K: Ord,
 {
     active_memtable: Memtable<K, V>,
-    memtables: Vec<Rc<RefCell<Memtable<K, V>>>>,
     ssts: Vec<String>,
 }
 
 impl<K, V> Layout<K, V>
 where
-    K: Ord + Default,
-    V: Default,
+    K: Ord + Default + Clone + std::fmt::Debug,
+    V: Default + Clone + std::fmt::Debug,
 {
     fn new(memtable: Memtable<K, V>) -> Self {
         Layout {
             active_memtable: memtable,
-            memtables: Vec::new(),
             ssts: Vec::new(),
         }
+    }
+
+    fn flush_memtable(&mut self) {
+        self.active_memtable = Memtable::new();
     }
 }
 
@@ -153,7 +155,7 @@ where
         let writer = SstWriter::new(scan, &sst_fname);
         writer.write()?;
 
-        self.layout = Layout::new(Memtable::new());
+        self.layout.flush_memtable();
         self.layout.ssts.push(sst_fname.clone());
 
         Ok(sst_fname)
@@ -162,7 +164,9 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::{collections::HashMap, rc::Rc};
+    use std::{collections::BTreeMap, rc::Rc};
+
+    use rand::Rng;
 
     use crate::{
         db::DBEntry,
@@ -172,6 +176,31 @@ mod test {
     };
 
     use super::Db;
+
+    #[test]
+    fn random_inserts() {
+        let mut map = BTreeMap::new();
+        let mut db: Db<String, String, MockLog<DBEntry<String, String>>> =
+            Db::new("db_data/".to_owned());
+
+        let mut rng = rand::thread_rng();
+
+        for i in 0..1000 {
+            let val: usize = rng.gen_range(0..100);
+            let key = format!("key{}", val);
+            let value = format!("value{}", i);
+            db.insert(key.clone(), value.clone());
+            map.insert(key, value);
+            if rng.gen_range(0_usize..100) == 0 {
+                db.flush_memtable().unwrap();
+            }
+        }
+
+        let db_data: Vec<_> = db.scan().collect();
+        let iter_data: Vec<_> = map.into_iter().collect();
+
+        assert_eq!(db_data, iter_data);
+    }
 
     #[test]
     fn test_sst_iter() {
@@ -261,32 +290,6 @@ mod test {
                 }
             })
         })
-    }
-
-    #[test]
-    fn random_inserts() {
-        let map = HashMap::new();
-        let mut db: Db<String, String, MockLog<DBEntry<String, String>>> =
-            Db::new("db_data/".to_owned());
-
-        let mut rng = rand::new();
-
-        for i in 0..1000 {
-            rng.next();
-            db.insert(format!("sstkey{}", i), format!("bar{}", i));
-        }
-
-        let _fname = db.flush_memtable().unwrap();
-
-        for i in 10..20 {
-            db.insert(format!("memkey{}", i), format!("bar{}", i));
-        }
-
-        let iter = db.scan();
-
-        for k in iter {
-            println!("{:?}", k);
-        }
     }
 
     #[test]

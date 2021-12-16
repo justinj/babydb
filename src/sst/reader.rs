@@ -87,7 +87,7 @@ struct Block<K, V> {
 
 impl<K, V> Block<K, V>
 where
-    K: Decode + std::fmt::Debug,
+    K: Decode + Ord + std::fmt::Debug,
     V: Decode + std::fmt::Debug,
 {
     fn new() -> Self {
@@ -97,6 +97,10 @@ where
             data: Vec::new(),
             idx: 0,
         }
+    }
+
+    fn seek_ge(&mut self, seek_key: &K) {
+        self.idx = self.data.partition_point(|(k, _v)| k < seek_key);
     }
 
     fn align_end(&mut self) {
@@ -178,6 +182,7 @@ where
     V: Decode + Default,
 {
     file: File,
+    // (loc, len)
     index_block: Block<K, (u32, u32)>,
     current_block: Block<K, V>,
     state: ReaderState,
@@ -274,15 +279,17 @@ where
         }
     }
 
-    fn seek_ge(&mut self, _key: &K) {
-        // TODO: oh, we'll get to you.
-        todo!()
+    fn seek_ge(&mut self, key: &K) {
+        self.index_block.seek_ge(key);
+        // TODO: how to handle errors here without infecting the nice simple traits?
+        self.next_block().unwrap();
+        self.current_block.seek_ge(key);
     }
 }
 
 impl<K, V> SstReader<K, V>
 where
-    K: Decode + Default + std::fmt::Debug,
+    K: Decode + Default + Ord + std::fmt::Debug,
     V: Decode + Default + std::fmt::Debug,
 {
     fn next_block(&mut self) -> anyhow::Result<bool> {

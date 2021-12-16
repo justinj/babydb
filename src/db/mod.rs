@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::{cell::RefCell, marker::PhantomData, rc::Rc};
+use std::marker::PhantomData;
 
 use crate::{
     log::{LogEntry, LogSet, Logger},
@@ -274,17 +274,15 @@ mod test {
                     }
                     out
                 }
-                // TODO: oh, we'll get to you.
-                // "seek-ge" => {
-                //     let key = test_case
-                //         .args
-                //         .get("key")
-                //         .expect("seek-ge requires key argument")
-                //         .get(0)
-                //         .unwrap();
-                //     iter.as_mut().unwrap().seek_ge(key);
-                //     "ok\n".into()
-                // }
+                "seek-ge" => {
+                    let key = test_case
+                        .args
+                        .get("key")
+                        .expect("seek-ge requires key argument");
+                    let k = (key[0].clone(), key[1].parse::<usize>().unwrap());
+                    reader.as_mut().unwrap().seek_ge(&k);
+                    format!("{:?}\n", reader.as_mut().unwrap().peek())
+                }
                 _ => {
                     panic!("unhandled");
                 }

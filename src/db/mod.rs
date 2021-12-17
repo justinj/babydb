@@ -53,6 +53,28 @@ where
     }
 }
 
+impl<K, V> DBEntry<K, V>
+where
+    K: std::fmt::Debug + Clone,
+    V: std::fmt::Debug + Clone,
+{
+    fn take_write(self) -> Option<(usize, K, V)> {
+        if let DBEntry::Write(x, k, v) = self {
+            Some((x, k, v))
+        } else {
+            None
+        }
+    }
+
+    fn take_delete(self) -> Option<(usize, K)> {
+        if let DBEntry::Delete(x, k) = self {
+            Some((x, k))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Layout<K, V>
 where
@@ -108,20 +130,19 @@ where
 
     fn insert(&mut self, k: K, v: V) {
         self.next_seqnum += 1;
-        // TODO: this clone is probably not needed.
-        self.wal_set
-            .current()
-            .write(DBEntry::Write(self.next_seqnum, k.clone(), v.clone()));
-        self.layout.active_memtable.insert(self.next_seqnum, k, v);
+        let write_entry = DBEntry::Write(self.next_seqnum, k, v);
+        self.wal_set.current().write(&write_entry);
+        let (seqnum, k, v) = write_entry.take_write().unwrap();
+        self.layout.active_memtable.insert(seqnum, k, v);
     }
 
     fn delete(&mut self, k: K) {
         self.next_seqnum += 1;
         // TODO: this clone is probably not needed.
-        self.wal_set
-            .current()
-            .write(DBEntry::Delete(self.next_seqnum, k.clone()));
-        self.layout.active_memtable.delete(self.next_seqnum, k);
+        let delete = DBEntry::Delete(self.next_seqnum, k);
+        self.wal_set.current().write(&delete);
+        let (seqnum, k) = delete.take_delete().unwrap();
+        self.layout.active_memtable.delete(seqnum, k);
     }
 
     fn scan(&mut self) -> DbIterator<K, V, impl KVIter<K, V>>
@@ -281,7 +302,7 @@ mod test {
                         .expect("seek-ge requires key argument");
                     let k = (key[0].clone(), key[1].parse::<usize>().unwrap());
                     reader.as_mut().unwrap().seek_ge(&k);
-                    format!("{:?}\n", reader.as_mut().unwrap().peek())
+                    format!("{:?}\n", reader.as_mut().unwrap().next())
                 }
                 _ => {
                     panic!("unhandled");

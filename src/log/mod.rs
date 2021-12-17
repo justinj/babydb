@@ -25,7 +25,7 @@ where
     E: LogEntry,
 {
     fn new(dir: &str, lower_bound: usize) -> Self;
-    fn write(&mut self, m: E);
+    fn write(&mut self, m: &E);
 
     fn frontier(&self) -> usize;
     fn freeze(self) -> Frozen<E, Self>;
@@ -93,9 +93,9 @@ where
         }
     }
 
-    fn write(&mut self, e: E) {
+    fn write(&mut self, e: &E) {
         self.highest_seen_seqnum = std::cmp::max(self.highest_seen_seqnum, e.seqnum());
-        (*self.entries).borrow_mut().push(e);
+        (*self.entries).borrow_mut().push(e.clone());
     }
 
     fn frontier(&self) -> usize {

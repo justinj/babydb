@@ -4,9 +4,10 @@ use std::{
     marker::PhantomData,
 };
 
-use crate::memtable::KVIter;
-
-use super::{Encode, KeyWriter};
+use crate::{
+    encoding::{Encode, KeyWriter},
+    memtable::KVIter,
+};
 
 const RESET_INTERVAL: usize = 2;
 

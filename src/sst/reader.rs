@@ -5,9 +5,10 @@ use std::{
     marker::PhantomData,
 };
 
-use crate::memtable::KVIter;
-
-use super::{Decode, KeyReader};
+use crate::{
+    encoding::{Decode, KeyReader},
+    memtable::KVIter,
+};
 
 struct Reader<T: Decode, R: Seek + Read> {
     r: R,

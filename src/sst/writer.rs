@@ -141,6 +141,8 @@ where
         // Write the length of the index block.
         self.file.write_all(&(index.len() as u32).to_le_bytes())?;
 
+        self.file.sync_all()?;
+
         Ok(())
     }
 }

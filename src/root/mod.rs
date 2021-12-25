@@ -1,17 +1,16 @@
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    os::unix::prelude::AsRawFd,
 };
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 
 pub struct Root<T>
 where
     T: Serialize + DeserializeOwned + Default,
 {
     dir: String,
-    data: T,
+    pub(crate) data: T,
 }
 
 impl<T> Root<T>
@@ -43,7 +42,7 @@ where
         format!("{}/ROOT_TMP", dir)
     }
 
-    fn write(&mut self, t: T) -> anyhow::Result<()> {
+    pub fn write(&mut self, t: T) -> anyhow::Result<()> {
         let tmp_path = Self::tmp_path(self.dir.as_str());
         let mut file = OpenOptions::new()
             .write(true)
@@ -52,9 +51,9 @@ where
             .open(&tmp_path)?;
         let encoded = serde_json::to_string(&t)?;
         file.write_all(encoded.as_bytes())?;
+        // TODO: is this a no-op?
         file.flush()?;
-        // fsync(file)?;
-        // fsync_dir(self.dir.as_str())?;
+        file.sync_all()?;
         let path = Self::path(self.dir.as_str());
 
         fs::rename(tmp_path, path)?;
@@ -63,15 +62,3 @@ where
         Ok(())
     }
 }
-
-// extern crate nix;
-
-// Cribbed from https://github.com/untitaker/rust-atomicwrites/blob/master/src/lib.rs.
-// fn fsync<T: AsRawFd>(f: T) -> anyhow::Result<()> {
-//     Ok(nix::unistd::fsync(f.as_raw_fd())?)
-// }
-
-// fn fsync_dir(x: &str) -> anyhow::Result<()> {
-//     let f = fs::File::open(x)?;
-//     fsync(f)
-// }

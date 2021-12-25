@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use crate::db::DBCommand;
+use crate::encoding::{Decode, Encode};
 use std::{marker::PhantomData, rc::Rc};
 
 pub trait KVIter<K, V>
@@ -565,13 +567,24 @@ where
 
 impl<K, V> Memtable<K, V>
 where
-    K: Default + Ord + Clone + std::fmt::Debug,
-    V: Default + Clone + std::fmt::Debug,
+    K: Default + Ord + Clone + std::fmt::Debug + Encode + Decode,
+    V: Default + Clone + std::fmt::Debug + Encode,
 {
     pub fn new() -> Self {
         Memtable {
             prev_seqnum: 0,
             entries: Vec::new(),
+        }
+    }
+
+    pub fn apply_command(&mut self, cmd: DBCommand<K, V>) {
+        match cmd {
+            DBCommand::Write(seqnum, k, v) => {
+                self.insert(seqnum, k, v);
+            }
+            DBCommand::Delete(seqnum, k) => {
+                self.delete(seqnum, k);
+            }
         }
     }
 

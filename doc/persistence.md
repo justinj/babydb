@@ -123,7 +123,7 @@ A reader is parameterized with a snapshot of the memtable and a set of SSTs. It 
 # Misc
 
 | Data Structure | Random Reads | Random Writes | Durable |
-| -------------- | ------------ | ------------------ | ------- |
-| SST            | ✅         | ❌                  | ✅      |
-| Memtable       | ✅         | ✅                  | ❌      |
-| Log            | ❌         | ✅                  | ✅      |
+| -------------- | ------------ | ------------- | ------- |
+| Log            | ❌           | ✅             | ✅      |
+| SST            | ✅           | ❌             | ✅      |
+| Memtable       | ✅           | ✅             | ❌      |

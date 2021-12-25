@@ -15,6 +15,10 @@ impl<E> Logger<E> for MockLog<E>
 where
     E: LogEntry,
 {
+    fn fname(&self) -> String {
+        panic!("unimplemented")
+    }
+
     fn new(_dir: &str, lower_bound: usize) -> anyhow::Result<Self> {
         Ok(MockLog {
             entries: Rc::new(RefCell::new(Vec::new())),

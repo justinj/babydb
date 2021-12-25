@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 use std::marker::PhantomData;
 
-use crate::encoding::Encode;
+use crate::encoding::{Encode, Decode};
 
 pub(crate) mod file_log;
 pub(crate) mod mock_log;
 
-pub trait LogEntry: std::fmt::Debug + Clone + Encode {
+pub trait LogEntry: std::fmt::Debug + Clone + Encode + Decode {
     fn seqnum(&self) -> usize;
 }
 
@@ -31,6 +31,7 @@ where
 {
     fn new(dir: &str, lower_bound: usize) -> anyhow::Result<Self>;
     fn write(&mut self, m: &E) -> anyhow::Result<()>;
+    fn fname(&self) -> String;
 
     fn frontier(&self) -> usize;
 
@@ -55,6 +56,12 @@ where
     E: LogEntry,
     L: Logger<E>,
 {
+    pub fn fnames(&self) -> Vec<String> {
+        let mut out = vec![self.active_log.fname()];
+        out.extend(self.old.iter().map(|l| l.fname()));
+        out
+    }
+
     pub fn open_dir(dir: String) -> anyhow::Result<Self> {
         // TODO: what's the right starting seqnum?
         let cur_seqnum = 0;

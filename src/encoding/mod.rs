@@ -79,6 +79,12 @@ impl KeyReader {
         }
     }
 
+    pub fn buf_mut(&mut self) -> &mut Vec<u8> {
+        self.scratch.clear();
+        self.from = 0;
+        &mut self.buf
+    }
+
     pub fn load(&mut self, buf: &[u8]) {
         self.buf.extend(buf);
         self.from = 0;
@@ -140,6 +146,19 @@ impl Encode for usize {
 }
 
 impl Decode for usize {
+    fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
+        let next = kr.next();
+        Ok(Self::from_le_bytes(next.try_into()?))
+    }
+}
+
+impl Encode for u8 {
+    fn write_bytes(&self, kw: &mut KeyWriter) {
+        kw.write(&self.to_le_bytes())
+    }
+}
+
+impl Decode for u8 {
     fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
         let next = kr.next();
         Ok(Self::from_le_bytes(next.try_into()?))

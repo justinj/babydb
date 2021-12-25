@@ -1,10 +1,11 @@
 #![allow(dead_code)]
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 
 use crate::{
     encoding::{Decode, Encode},
-    log::{LogEntry, LogSet, Logger},
+    log::{file_log::LogReader, LogEntry, LogSet, Logger},
     memtable::{KVIter, Memtable, MergingIter, SeqnumIter},
     root::Root,
     sst::{reader::SstReader, writer::SstWriter},
@@ -34,7 +35,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-enum DBCommand<K, V>
+pub enum DBCommand<K, V>
 where
     K: std::fmt::Debug + Encode,
     V: std::fmt::Debug + Encode,
@@ -51,19 +52,41 @@ where
     fn write_bytes(&self, kw: &mut crate::encoding::KeyWriter) {
         match self {
             DBCommand::Write(seqnum, k, v) => {
-                (0_usize, (seqnum, (k, v))).write_bytes(kw);
+                (0_u8, (seqnum, (k, v))).write_bytes(kw);
             }
             DBCommand::Delete(seqnum, k) => {
-                (1_usize, (seqnum, k)).write_bytes(kw);
+                (1_u8, (seqnum, k)).write_bytes(kw);
             }
+        }
+    }
+}
+
+impl<K, V> Decode for DBCommand<K, V>
+where
+    K: Encode + Decode,
+    V: Encode + Decode,
+{
+    fn decode(kr: &mut crate::encoding::KeyReader) -> anyhow::Result<Self> {
+        // TODO: does this break the abstraction? god, just use a real
+        // serialization scheme.
+        match kr.next()[0] {
+            0 => {
+                let (seqnum, (k, v)) = <(usize, (K, V))>::decode(kr)?;
+                Ok(DBCommand::Write(seqnum, k, v))
+            }
+            1 => {
+                let (seqnum, k) = <(usize, K)>::decode(kr)?;
+                Ok(DBCommand::Delete(seqnum, k))
+            }
+            _ => bail!("invalid command"),
         }
     }
 }
 
 impl<K, V> LogEntry for DBCommand<K, V>
 where
-    K: std::fmt::Debug + Clone + Encode,
-    V: std::fmt::Debug + Clone + Encode,
+    K: std::fmt::Debug + Clone + Encode + Decode,
+    V: std::fmt::Debug + Clone + Encode + Decode,
 {
     fn seqnum(&self) -> usize {
         match self {
@@ -99,8 +122,8 @@ where
 
 impl<K, V> Layout<K, V>
 where
-    K: Ord + Default + Clone + std::fmt::Debug,
-    V: Default + Clone + std::fmt::Debug,
+    K: Ord + Default + Clone + std::fmt::Debug + Encode + Decode,
+    V: Default + Clone + std::fmt::Debug + Encode + Decode,
 {
     fn new(memtable: Memtable<K, V>) -> Self {
         Layout {
@@ -116,8 +139,8 @@ where
 
 struct Db<K, V, L>
 where
-    K: std::fmt::Debug + Ord + Clone + Encode,
-    V: std::fmt::Debug + Clone + Encode,
+    K: std::fmt::Debug + Ord + Clone + Encode + Decode,
+    V: std::fmt::Debug + Clone + Encode + Decode,
     L: Logger<DBCommand<K, V>>,
 {
     root: Root<DiskLayout>,
@@ -135,12 +158,21 @@ where
 {
     // TODO: This should be P: IntoPath like in fs.
     fn new(dir: String) -> anyhow::Result<Self> {
+        let root: Root<DiskLayout> = Root::load(dir.clone())?;
+        let mut memtable = Memtable::new();
+        let mut next_seqnum = 0;
+        for wal in root.data.wals.iter().rev() {
+            for command in LogReader::<DBCommand<K, V>>::new(wal)? {
+                next_seqnum = std::cmp::max(command.seqnum(), next_seqnum);
+                memtable.apply_command(command)
+            }
+        }
         Ok(Self {
-            root: Root::load(dir.clone())?,
-            layout: Layout::new(Memtable::new()),
+            root,
+            layout: Layout::new(memtable),
             wal_set: LogSet::open_dir(dir.clone())?,
             dir,
-            next_seqnum: 0,
+            next_seqnum,
         })
     }
 
@@ -150,14 +182,7 @@ where
     }
 
     fn apply_command_volatile(&mut self, cmd: DBCommand<K, V>) {
-        match cmd {
-            DBCommand::Write(seqnum, k, v) => {
-                self.layout.active_memtable.insert(seqnum, k, v);
-            }
-            DBCommand::Delete(seqnum, k) => {
-                self.layout.active_memtable.delete(seqnum, k);
-            }
-        }
+        self.layout.active_memtable.apply_command(cmd);
     }
 
     fn insert(&mut self, k: K, v: V) {
@@ -204,6 +229,11 @@ where
         self.layout.flush_memtable();
         self.layout.ssts.push(sst_fname.clone());
 
+        self.root.write(DiskLayout {
+            ssts: self.layout.ssts.clone(),
+            wals: self.wal_set.fnames(),
+        })?;
+
         Ok(sst_fname)
     }
 }
@@ -218,7 +248,7 @@ mod test {
     use crate::{
         db::DBCommand,
         encoding::{Decode, Encode},
-        log::{mock_log::MockLog, Logger},
+        log::{file_log::Log, Logger},
         memtable::{KVIter, VecIter},
         sst::{reader::SstReader, writer::SstWriter},
     };
@@ -240,7 +270,7 @@ mod test {
     fn random_inserts() {
         let dir = tempfile::tempdir().unwrap();
         let mut map = BTreeMap::new();
-        let mut db: Db<String, String, MockLog<DBCommand<String, String>>> =
+        let mut db: Db<String, String, Log<DBCommand<String, String>>> =
             Db::new(dir.path().to_str().unwrap().to_owned()).unwrap();
 
         let mut rng = rand::thread_rng();
@@ -353,7 +383,7 @@ mod test {
     #[test]
     fn test_insert() {
         let dir = tempfile::tempdir().unwrap();
-        let mut db: Db<String, String, MockLog<DBCommand<String, String>>> =
+        let mut db: Db<String, String, Log<DBCommand<String, String>>> =
             Db::new(dir.path().to_str().unwrap().to_owned()).unwrap();
         for i in 0..10 {
             db.insert(format!("sstkey{}", i), format!("bar{}", i));
@@ -370,5 +400,32 @@ mod test {
         for k in iter {
             println!("{:?}", k);
         }
+    }
+
+    #[test]
+    fn test_recover() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db: Db<String, String, Log<DBCommand<String, String>>> =
+            Db::new(dir.path().to_str().unwrap().to_owned()).unwrap();
+        for i in 0..10 {
+            db.insert(format!("sstkey{}", i), format!("bar{}", i));
+        }
+
+        let _fname = db.flush_memtable().unwrap();
+
+        for i in 10..20 {
+            db.insert(format!("memkey{}", i), format!("bar{}", i));
+        }
+
+        let prev_data: Vec<_> = db.scan().collect();
+
+        drop(db);
+
+        let mut db: Db<String, String, Log<DBCommand<String, String>>> =
+            Db::new(dir.path().to_str().unwrap().to_owned()).unwrap();
+
+        let post_data: Vec<_> = db.scan().collect();
+
+        assert_eq!(prev_data, post_data);
     }
 }

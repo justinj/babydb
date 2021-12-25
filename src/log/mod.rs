@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use std::marker::PhantomData;
 
-use crate::encoding::{Encode, Decode};
+use crate::encoding::{Decode, Encode};
 
 pub(crate) mod file_log;
 pub(crate) mod mock_log;
@@ -89,5 +89,9 @@ where
         );
         self.old.push(old_log);
         Ok(())
+    }
+
+    pub fn remove_old(&mut self) {
+        self.old.clear();
     }
 }

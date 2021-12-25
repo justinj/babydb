@@ -125,10 +125,10 @@ where
     K: Ord + Default + Clone + std::fmt::Debug + Encode + Decode,
     V: Default + Clone + std::fmt::Debug + Encode + Decode,
 {
-    fn new(memtable: Memtable<K, V>) -> Self {
+    fn new(memtable: Memtable<K, V>, ssts: Vec<String>) -> Self {
         Layout {
             active_memtable: memtable,
-            ssts: Vec::new(),
+            ssts,
         }
     }
 
@@ -167,9 +167,14 @@ where
                 memtable.apply_command(command)
             }
         }
+        // so if we yield when we do a write, do we actually want to like, keep
+        // track of the set of open writes, and keep minting new read iterators
+        // just below the smallest one..? but later writes will block the
+        // earliest one...
+        let ssts = root.data.ssts.clone();
         Ok(Self {
             root,
-            layout: Layout::new(memtable),
+            layout: Layout::new(memtable, ssts),
             wal_set: LogSet::open_dir(dir.clone())?,
             dir,
             next_seqnum,
@@ -222,9 +227,13 @@ where
 
         // TODO: use the real path join.
         // TODO: include the lower bound?
+        self.wal_set.fresh()?;
+
         let sst_fname = format!("{}/sst{}.sst", self.dir, self.next_seqnum);
         let writer = SstWriter::new(scan, &sst_fname);
         writer.write()?;
+
+        self.wal_set.remove_old();
 
         self.layout.flush_memtable();
         self.layout.ssts.push(sst_fname.clone());

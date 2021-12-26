@@ -2,6 +2,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{Cursor, Write},
     marker::PhantomData,
+    path::Path,
 };
 
 use crate::{
@@ -82,7 +83,10 @@ where
     K: Ord + Encode + Clone,
     V: Encode,
 {
-    pub fn new(it: I, fname: &str) -> Self {
+    pub fn new<P>(it: I, fname: P) -> Self
+    where
+        P: AsRef<Path>,
+    {
         let file = OpenOptions::new()
             .write(true)
             .truncate(true)

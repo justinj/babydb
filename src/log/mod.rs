@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use std::marker::PhantomData;
+use std::{marker::PhantomData, path::PathBuf};
 
 use crate::encoding::{Decode, Encode};
 
@@ -31,7 +31,7 @@ where
 {
     fn new(dir: &str, lower_bound: usize) -> anyhow::Result<Self>;
     fn write(&mut self, m: &E) -> anyhow::Result<()>;
-    fn fname(&self) -> String;
+    fn fname(&self) -> PathBuf;
 
     fn frontier(&self) -> usize;
 
@@ -56,9 +56,9 @@ where
     E: LogEntry,
     L: Logger<E>,
 {
-    pub fn fnames(&self) -> Vec<String> {
+    pub fn fnames(&self) -> Vec<PathBuf> {
         let mut out = vec![self.active_log.fname()];
-        out.extend(self.old.iter().map(|l| l.fname()));
+        out.extend(self.old.iter().map(|l| l.fname().into()));
         out
     }
 

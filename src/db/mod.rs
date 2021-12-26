@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
+use std::{marker::PhantomData, path::PathBuf};
 
 use crate::{
     encoding::{Decode, Encode},
@@ -98,8 +98,8 @@ where
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct DiskLayout {
-    ssts: Vec<String>,
-    wals: Vec<String>,
+    ssts: Vec<PathBuf>,
+    wals: Vec<PathBuf>,
 }
 
 impl DiskLayout {
@@ -117,7 +117,7 @@ where
     K: Ord,
 {
     active_memtable: Memtable<K, V>,
-    ssts: Vec<String>,
+    ssts: Vec<PathBuf>,
 }
 
 impl<K, V> Layout<K, V>
@@ -125,7 +125,7 @@ where
     K: Ord + Default + Clone + std::fmt::Debug + Encode + Decode,
     V: Default + Clone + std::fmt::Debug + Encode + Decode,
 {
-    fn new(memtable: Memtable<K, V>, ssts: Vec<String>) -> Self {
+    fn new(memtable: Memtable<K, V>, ssts: Vec<PathBuf>) -> Self {
         Layout {
             active_memtable: memtable,
             ssts,
@@ -146,7 +146,7 @@ where
     root: Root<DiskLayout>,
     layout: Layout<K, V>,
     wal_set: LogSet<DBCommand<K, V>, L>,
-    dir: String,
+    dir: PathBuf,
     next_seqnum: usize,
 }
 
@@ -167,16 +167,12 @@ where
                 memtable.apply_command(command)
             }
         }
-        // so if we yield when we do a write, do we actually want to like, keep
-        // track of the set of open writes, and keep minting new read iterators
-        // just below the smallest one..? but later writes will block the
-        // earliest one...
-        let ssts = root.data.ssts.clone();
+        let ssts = root.data.ssts.iter().map(|path| path.into()).collect();
         Ok(Self {
             root,
             layout: Layout::new(memtable, ssts),
             wal_set: LogSet::open_dir(dir.clone())?,
-            dir,
+            dir: dir.into(),
             next_seqnum,
         })
     }
@@ -210,7 +206,7 @@ where
             self.layout
                 .ssts
                 .iter()
-                .map(|fname| SstReader::load(fname.as_str()).unwrap()),
+                .map(|fname| SstReader::load(fname).unwrap()),
         );
         let lhs: Box<dyn KVIter<(K, usize), Option<V>>> = Box::new(sst_merge);
         let merged = MergingIter::new([Box::new(tab), lhs]);
@@ -222,28 +218,27 @@ where
         }
     }
 
-    fn flush_memtable(&mut self) -> anyhow::Result<String> {
+    fn flush_memtable(&mut self) -> anyhow::Result<PathBuf> {
         let scan = self.layout.active_memtable.scan();
 
-        // TODO: use the real path join.
         // TODO: include the lower bound?
         self.wal_set.fresh()?;
 
-        let sst_fname = format!("{}/sst{}.sst", self.dir, self.next_seqnum);
-        let writer = SstWriter::new(scan, &sst_fname);
+        let sst_path = self.dir.join(format!("sst{}.sst", self.next_seqnum));
+        let writer = SstWriter::new(scan, &sst_path);
         writer.write()?;
 
         self.wal_set.remove_old();
 
         self.layout.flush_memtable();
-        self.layout.ssts.push(sst_fname.clone());
+        self.layout.ssts.push(sst_path.clone());
 
         self.root.write(DiskLayout {
             ssts: self.layout.ssts.clone(),
             wals: self.wal_set.fnames(),
         })?;
 
-        Ok(sst_fname)
+        Ok(sst_path)
     }
 }
 
@@ -276,6 +271,8 @@ mod test {
     }
 
     #[test]
+    // This is really slow.
+    #[ignore]
     fn random_inserts() {
         let dir = tempfile::tempdir().unwrap();
         let mut map = BTreeMap::new();
@@ -427,8 +424,6 @@ mod test {
         }
 
         let prev_data: Vec<_> = db.scan().collect();
-
-        drop(db);
 
         let mut db: Db<String, String, Log<DBCommand<String, String>>> =
             Db::new(dir.path().to_str().unwrap().to_owned()).unwrap();

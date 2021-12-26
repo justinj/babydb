@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use super::{LogEntry, Logger};
 
@@ -15,7 +15,7 @@ impl<E> Logger<E> for MockLog<E>
 where
     E: LogEntry,
 {
-    fn fname(&self) -> String {
+    fn fname(&self) -> PathBuf {
         panic!("unimplemented")
     }
 

@@ -3,6 +3,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{Cursor, Read, Seek, SeekFrom},
     marker::PhantomData,
+    path::Path,
 };
 
 use crate::{
@@ -322,7 +323,10 @@ where
         }
     }
 
-    pub fn load(fname: &str) -> anyhow::Result<Self> {
+    pub fn load<P>(fname: P) -> anyhow::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
         // TODO: check if already exists and fail if yes.
         let mut file = OpenOptions::new().read(true).open(fname)?;
 

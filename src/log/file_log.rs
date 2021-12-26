@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::{Read, Write},
     marker::PhantomData,
+    path::{Path, PathBuf},
 };
 
 use crate::encoding::{KeyReader, KeyWriter};
@@ -21,7 +22,10 @@ impl<E> LogReader<E>
 where
     E: LogEntry,
 {
-    pub fn new(fname: &str) -> anyhow::Result<Self> {
+    pub fn new<P>(fname: P) -> anyhow::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
         let file = File::open(&fname)?;
         Ok(Self {
             file,
@@ -42,18 +46,16 @@ where
         // First, get the u32 that denotes this entry's length.
         let mut buf = [0_u8; 4];
         // TODO: signal this error upwards somehow.
-        if let Err(_) = self.file.read_exact(&mut buf) {
-            return None;
-        }
+        self.file.read_exact(&mut buf).ok()?;
         let data_len = u32::from_le_bytes(buf);
 
         // TODO: this is probably not the right way to fill out the buffer to
         // the right size/length, maybe keep around an array of zeroes and copy
         // it over? needs benchmarking.
-        let mut buf = self.reader.buf_mut();
+        let buf = self.reader.buf_mut();
         buf.clear();
         buf.extend(std::iter::repeat(0).take(data_len.try_into().unwrap()));
-        self.file.read_exact(&mut buf).unwrap();
+        self.file.read_exact(buf).ok()?;
 
         let v = E::decode(&mut self.reader).unwrap();
 
@@ -75,8 +77,8 @@ where
 }
 
 impl<E: LogEntry> Logger<E> for Log<E> {
-    fn fname(&self) -> String {
-        self.file_name.clone()
+    fn fname(&self) -> PathBuf {
+        self.file_name.clone().into()
     }
 
     fn new(dir: &str, lower_bound: usize) -> anyhow::Result<Self> {

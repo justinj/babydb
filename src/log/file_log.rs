@@ -70,7 +70,7 @@ where
 {
     // TODO: does this do buffering or does this need to be a BufReader<File>?
     file: File,
-    file_name: String,
+    file_name: PathBuf,
     highest_seen_seqnum: usize,
     kw: KeyWriter,
     _marker: PhantomData<E>,
@@ -78,13 +78,15 @@ where
 
 impl<E: LogEntry> Logger<E> for Log<E> {
     fn fname(&self) -> PathBuf {
-        self.file_name.clone().into()
+        self.file_name.clone()
     }
 
-    fn new(dir: &str, lower_bound: usize) -> anyhow::Result<Self> {
-        // TODO: use real file sep
+    fn new<P>(dir: &P, lower_bound: usize) -> anyhow::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
         std::fs::create_dir_all(dir)?;
-        let file_name = format!("{}/wal{}", dir, lower_bound);
+        let file_name = dir.as_ref().join(format!("wal{}", lower_bound));
         let file = File::create(&file_name)?;
         // Ensure the file is created.
         file.sync_all()?;

@@ -18,20 +18,20 @@ impl<T> Root<T>
 where
     T: Serialize + DeserializeOwned + Default,
 {
-    pub fn load<P>(dir: P) -> anyhow::Result<Self>
+    pub fn load<P>(dir: &P) -> anyhow::Result<Self>
     where
-        P: AsRef<Path> + Into<PathBuf>,
+        P: AsRef<Path>,
     {
         match fs::read_to_string(Self::path(dir.as_ref())) {
             Ok(contents) => Ok(Self {
-                dir: dir.into(),
+                dir: dir.as_ref().to_owned(),
                 data: serde_json::from_str(contents.as_str())?,
             }),
             Err(_) => {
                 // TODO: check if this is a "did not exist" error
                 let data = T::default();
                 let mut result = Self {
-                    dir: dir.into(),
+                    dir: dir.as_ref().to_owned(),
                     data,
                 };
                 result.write(T::default())?;

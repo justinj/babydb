@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
-use std::{marker::PhantomData, path::PathBuf};
+use std::{
+    marker::PhantomData,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     encoding::{Decode, Encode},
@@ -156,9 +159,11 @@ where
     V: Default + Clone + std::fmt::Debug + Decode + Encode,
     L: Logger<DBCommand<K, V>>,
 {
-    // TODO: This should be P: IntoPath like in fs.
-    fn new(dir: String) -> anyhow::Result<Self> {
-        let root: Root<DiskLayout> = Root::load(dir.clone())?;
+    fn new<P>(dir: P) -> anyhow::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let root: Root<DiskLayout> = Root::load(&dir)?;
         let mut memtable = Memtable::new();
         let mut next_seqnum = 0;
         for wal in root.data.wals.iter().rev() {
@@ -171,8 +176,8 @@ where
         Ok(Self {
             root,
             layout: Layout::new(memtable, ssts),
-            wal_set: LogSet::open_dir(dir.clone())?,
-            dir: dir.into(),
+            wal_set: LogSet::open_dir(&dir)?,
+            dir: dir.as_ref().to_owned(),
             next_seqnum,
         })
     }

@@ -1,4 +1,8 @@
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 use super::{LogEntry, Logger};
 
@@ -19,7 +23,10 @@ where
         panic!("unimplemented")
     }
 
-    fn new(_dir: &str, lower_bound: usize) -> anyhow::Result<Self> {
+    fn new<P>(_dir: &P, lower_bound: usize) -> anyhow::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
         Ok(MockLog {
             entries: Rc::new(RefCell::new(Vec::new())),
             highest_seen_seqnum: lower_bound,

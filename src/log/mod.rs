@@ -1,5 +1,8 @@
 #![allow(dead_code)]
-use std::{marker::PhantomData, path::PathBuf};
+use std::{
+    marker::PhantomData,
+    path::{Path, PathBuf},
+};
 
 use crate::encoding::{Decode, Encode};
 
@@ -29,7 +32,9 @@ pub trait Logger<E>: std::fmt::Debug + Sized
 where
     E: LogEntry,
 {
-    fn new(dir: &str, lower_bound: usize) -> anyhow::Result<Self>;
+    fn new<P>(dir: &P, lower_bound: usize) -> anyhow::Result<Self>
+    where
+        P: AsRef<Path>;
     fn write(&mut self, m: &E) -> anyhow::Result<()>;
     fn fname(&self) -> PathBuf;
 
@@ -47,7 +52,7 @@ where
 pub struct LogSet<E: LogEntry, L: Logger<E>> {
     active_log: L,
     old: Vec<L>,
-    dir: String,
+    dir: PathBuf,
     _marker: PhantomData<E>,
 }
 
@@ -62,14 +67,21 @@ where
         out
     }
 
-    pub fn open_dir(dir: String) -> anyhow::Result<Self> {
+    pub fn open_dir<P>(dir: &P) -> anyhow::Result<Self>
+    where
+        P: AsRef<Path>,
+    {
         // TODO: what's the right starting seqnum?
         let cur_seqnum = 0;
+        let active_log = L::new(
+            &dir.as_ref().join(format!("wal-{}", cur_seqnum)),
+            cur_seqnum,
+        )?;
+
         Ok(LogSet {
-            // TODO: use cross-platform path join
-            active_log: L::new(format!("{}/wal-{}", dir, cur_seqnum).as_str(), cur_seqnum)?,
+            active_log,
             old: Vec::new(),
-            dir,
+            dir: dir.as_ref().to_owned(),
             _marker: PhantomData,
         })
     }
@@ -80,13 +92,8 @@ where
 
     pub fn fresh(&mut self) -> anyhow::Result<()> {
         let upper_bound = self.active_log.frontier();
-        let old_log = std::mem::replace(
-            &mut self.active_log,
-            L::new(
-                format!("{}/wal-{}", self.dir, upper_bound).as_str(),
-                upper_bound,
-            )?,
-        );
+        let active_log = L::new(&self.dir.join(format!("wal-{}", upper_bound)), upper_bound)?;
+        let old_log = std::mem::replace(&mut self.active_log, active_log);
         self.old.push(old_log);
         Ok(())
     }

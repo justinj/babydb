@@ -8,6 +8,7 @@ anyhow = "1.0"
 rand = "0.8.4"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.15.0", features = ["rt", "macros", "fs", "io-util"] }
 
 [dev-dependencies]
 datadriven = "0.6.0"

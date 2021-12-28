@@ -1,13 +1,14 @@
 use std::{
     fs::File,
-    io::{Read, Write},
+    io::Read,
     marker::PhantomData,
     path::{Path, PathBuf},
 };
 
 use crate::encoding::{KeyReader, KeyWriter};
+use tokio::io::AsyncWriteExt;
 
-use super::{LogEntry, Logger};
+use super::LogEntry;
 
 pub struct LogReader<E>
 where
@@ -69,27 +70,27 @@ where
     E: LogEntry,
 {
     // TODO: does this do buffering or does this need to be a BufReader<File>?
-    file: File,
+    file: tokio::fs::File,
     file_name: PathBuf,
     highest_seen_seqnum: usize,
     kw: KeyWriter,
     _marker: PhantomData<E>,
 }
 
-impl<E: LogEntry> Logger<E> for Log<E> {
-    fn fname(&self) -> PathBuf {
+impl<E: LogEntry> Log<E> {
+    pub fn fname(&self) -> PathBuf {
         self.file_name.clone()
     }
 
-    fn new<P>(dir: &P, lower_bound: usize) -> anyhow::Result<Self>
+    pub async fn new<P>(dir: &P, lower_bound: usize) -> anyhow::Result<Self>
     where
         P: AsRef<Path>,
     {
-        std::fs::create_dir_all(dir)?;
+        tokio::fs::create_dir_all(dir).await?;
         let file_name = dir.as_ref().join(format!("wal{}", lower_bound));
-        let file = File::create(&file_name)?;
+        let file = tokio::fs::File::create(&file_name).await?;
         // Ensure the file is created.
-        file.sync_all()?;
+        file.sync_all().await?;
         Ok(Self {
             file,
             file_name,
@@ -99,19 +100,19 @@ impl<E: LogEntry> Logger<E> for Log<E> {
         })
     }
 
-    fn write(&mut self, m: &E) -> anyhow::Result<()> {
+    pub async fn write(&mut self, m: &E) -> anyhow::Result<()> {
         self.kw.clear();
         m.write_bytes(&mut self.kw);
         self.file
-            .write_all(&(self.kw.buf.len() as u32).to_le_bytes())?;
-        self.file.write_all(&self.kw.buf)?;
-        self.file.flush()?;
-        self.file.sync_all()?;
+            .write_all(&(self.kw.buf.len() as u32).to_le_bytes())
+            .await?;
+        self.file.write_all(&self.kw.buf).await?;
+        self.file.sync_all().await?;
 
         Ok(())
     }
 
-    fn frontier(&self) -> usize {
+    pub fn frontier(&self) -> usize {
         self.highest_seen_seqnum + 1
     }
 }

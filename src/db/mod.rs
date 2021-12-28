@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     encoding::{Decode, Encode},
-    log::{file_log::LogReader, LogEntry, LogSet, Logger},
+    log::{file_log::LogReader, LogEntry, LogSet},
     memtable::{KVIter, Memtable, MergingIter, SeqnumIter},
     root::Root,
     sst::{reader::SstReader, writer::SstWriter},
@@ -140,26 +140,24 @@ where
     }
 }
 
-struct Db<K, V, L>
+struct Db<K, V>
 where
     K: std::fmt::Debug + Ord + Clone + Encode + Decode,
     V: std::fmt::Debug + Clone + Encode + Decode,
-    L: Logger<DBCommand<K, V>>,
 {
     root: Root<DiskLayout>,
     layout: Layout<K, V>,
-    wal_set: LogSet<DBCommand<K, V>, L>,
+    wal_set: LogSet<DBCommand<K, V>>,
     dir: PathBuf,
     next_seqnum: usize,
 }
 
-impl<K, V, L> Db<K, V, L>
+impl<K, V> Db<K, V>
 where
     K: Ord + Default + Clone + std::fmt::Debug + Decode + Encode,
     V: Default + Clone + std::fmt::Debug + Decode + Encode,
-    L: Logger<DBCommand<K, V>>,
 {
-    fn new<P>(dir: P) -> anyhow::Result<Self>
+    async fn new<P>(dir: P) -> anyhow::Result<Self>
     where
         P: AsRef<Path>,
     {
@@ -176,14 +174,14 @@ where
         Ok(Self {
             root,
             layout: Layout::new(memtable, ssts),
-            wal_set: LogSet::open_dir(&dir)?,
+            wal_set: LogSet::open_dir(&dir).await?,
             dir: dir.as_ref().to_owned(),
             next_seqnum,
         })
     }
 
-    fn apply_command(&mut self, cmd: DBCommand<K, V>) {
-        self.wal_set.current().write(&cmd).unwrap();
+    async fn apply_command(&mut self, cmd: DBCommand<K, V>) {
+        self.wal_set.current().write(&cmd).await.unwrap();
         self.apply_command_volatile(cmd);
     }
 
@@ -191,14 +189,16 @@ where
         self.layout.active_memtable.apply_command(cmd);
     }
 
-    fn insert(&mut self, k: K, v: V) {
+    async fn insert(&mut self, k: K, v: V) {
         self.next_seqnum += 1;
-        self.apply_command(DBCommand::Write(self.next_seqnum, k, v));
+        self.apply_command(DBCommand::Write(self.next_seqnum, k, v))
+            .await;
     }
 
-    fn delete(&mut self, k: K) {
+    async fn delete(&mut self, k: K) {
         self.next_seqnum += 1;
-        self.apply_command(DBCommand::Delete(self.next_seqnum, k));
+        self.apply_command(DBCommand::Delete(self.next_seqnum, k))
+            .await;
     }
 
     fn scan(&mut self) -> DbIterator<K, V, impl KVIter<K, V>>
@@ -223,11 +223,11 @@ where
         }
     }
 
-    fn flush_memtable(&mut self) -> anyhow::Result<PathBuf> {
+    async fn flush_memtable(&mut self) -> anyhow::Result<PathBuf> {
         let scan = self.layout.active_memtable.scan();
 
         // TODO: include the lower bound?
-        self.wal_set.fresh()?;
+        self.wal_set.fresh().await?;
 
         let sst_path = self.dir.join(format!("sst{}.sst", self.next_seqnum));
         let writer = SstWriter::new(scan, &sst_path);
@@ -255,34 +255,30 @@ mod test {
     use rand::Rng;
 
     use crate::{
-        db::DBCommand,
         encoding::{Decode, Encode},
-        log::{file_log::Log, Logger},
         memtable::{KVIter, VecIter},
         sst::{reader::SstReader, writer::SstWriter},
     };
 
     use super::Db;
 
-    fn test_db<K, V, L>() -> anyhow::Result<Db<K, V, L>>
+    async fn test_db<K, V>() -> anyhow::Result<Db<K, V>>
     where
         K: Ord + Clone + Encode + Decode + Default,
         V: Clone + Encode + Default + Encode + Decode,
-        L: Logger<DBCommand<K, V>>,
     {
         let dir = tempfile::tempdir()?;
         let path = dir.path().to_str().unwrap().to_owned();
-        Db::new(path)
+        Db::new(path).await
     }
 
-    #[test]
+    #[tokio::test]
     // This is really slow.
     #[ignore]
-    fn random_inserts() {
+    async fn random_inserts() {
         let dir = tempfile::tempdir().unwrap();
         let mut map = BTreeMap::new();
-        let mut db: Db<String, String, Log<DBCommand<String, String>>> =
-            Db::new(dir.path().to_str().unwrap().to_owned()).unwrap();
+        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
 
         let mut rng = rand::thread_rng();
 
@@ -290,10 +286,10 @@ mod test {
             let val: usize = rng.gen_range(0..100);
             let key = format!("key{}", val);
             let value = format!("value{}", i);
-            db.insert(key.clone(), value.clone());
+            db.insert(key.clone(), value.clone()).await;
             map.insert(key, value);
             if rng.gen_range(0_usize..100) == 0 {
-                db.flush_memtable().unwrap();
+                db.flush_memtable().await.unwrap();
             }
         }
 
@@ -391,47 +387,69 @@ mod test {
         })
     }
 
-    #[test]
-    fn test_insert() {
+    #[tokio::test]
+    async fn test_insert() {
         let dir = tempfile::tempdir().unwrap();
-        let mut db: Db<String, String, Log<DBCommand<String, String>>> =
-            Db::new(dir.path().to_str().unwrap().to_owned()).unwrap();
+        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
         for i in 0..10 {
-            db.insert(format!("sstkey{}", i), format!("bar{}", i));
+            db.insert(format!("sstkey{}", i), format!("bar{}", i)).await;
         }
 
-        let _fname = db.flush_memtable().unwrap();
+        let _fname = db.flush_memtable().await.unwrap();
 
         for i in 10..20 {
-            db.insert(format!("memkey{}", i), format!("bar{}", i));
+            db.insert(format!("memkey{}", i), format!("bar{}", i)).await;
         }
 
         let iter = db.scan();
 
-        for k in iter {
-            println!("{:?}", k);
-        }
+        assert_eq!(
+            iter.collect::<Vec<_>>(),
+            [
+                ("memkey10", "bar10"),
+                ("memkey11", "bar11"),
+                ("memkey12", "bar12"),
+                ("memkey13", "bar13"),
+                ("memkey14", "bar14"),
+                ("memkey15", "bar15"),
+                ("memkey16", "bar16"),
+                ("memkey17", "bar17"),
+                ("memkey18", "bar18"),
+                ("memkey19", "bar19"),
+                ("sstkey0", "bar0"),
+                ("sstkey1", "bar1"),
+                ("sstkey2", "bar2"),
+                ("sstkey3", "bar3"),
+                ("sstkey4", "bar4"),
+                ("sstkey5", "bar5"),
+                ("sstkey6", "bar6"),
+                ("sstkey7", "bar7"),
+                ("sstkey8", "bar8"),
+                ("sstkey9", "bar9")
+            ]
+            .into_iter()
+            .map(|(a, b)| (a.into(), b.into()))
+            .collect::<Vec<_>>(),
+        );
     }
 
-    #[test]
-    fn test_recover() {
+    #[tokio::test]
+    async fn test_recover() {
         let dir = tempfile::tempdir().unwrap();
-        let mut db: Db<String, String, Log<DBCommand<String, String>>> =
-            Db::new(dir.path().to_str().unwrap().to_owned()).unwrap();
+        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
         for i in 0..10 {
-            db.insert(format!("sstkey{}", i), format!("bar{}", i));
+            db.insert(format!("sstkey{}", i), format!("bar{}", i)).await;
         }
 
-        let _fname = db.flush_memtable().unwrap();
+        let _fname = db.flush_memtable().await.unwrap();
 
         for i in 10..20 {
-            db.insert(format!("memkey{}", i), format!("bar{}", i));
+            db.insert(format!("memkey{}", i), format!("bar{}", i)).await;
         }
 
         let prev_data: Vec<_> = db.scan().collect();
 
-        let mut db: Db<String, String, Log<DBCommand<String, String>>> =
-            Db::new(dir.path().to_str().unwrap().to_owned()).unwrap();
+        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
 
         let post_data: Vec<_> = db.scan().collect();
 

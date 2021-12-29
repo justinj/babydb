@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     marker::PhantomData,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use crate::{
@@ -150,6 +151,8 @@ where
     wal_set: LogSet<DBCommand<K, V>>,
     dir: PathBuf,
     next_seqnum: usize,
+    // The seqnum that is used for reads.
+    visible_seqnum: usize,
 }
 
 impl<K, V> Db<K, V>
@@ -177,6 +180,7 @@ where
             wal_set: LogSet::open_dir(&dir).await?,
             dir: dir.as_ref().to_owned(),
             next_seqnum,
+            visible_seqnum: next_seqnum,
         })
     }
 
@@ -193,12 +197,14 @@ where
         self.next_seqnum += 1;
         self.apply_command(DBCommand::Write(self.next_seqnum, k, v))
             .await;
+        self.visible_seqnum = self.next_seqnum;
     }
 
     async fn delete(&mut self, k: K) {
         self.next_seqnum += 1;
         self.apply_command(DBCommand::Delete(self.next_seqnum, k))
             .await;
+        self.visible_seqnum = self.next_seqnum;
     }
 
     fn scan(&mut self) -> DbIterator<K, V, impl KVIter<K, V>>
@@ -215,8 +221,7 @@ where
         );
         let lhs: Box<dyn KVIter<(K, usize), Option<V>>> = Box::new(sst_merge);
         let merged = MergingIter::new([Box::new(tab), lhs]);
-        let scan = SeqnumIter::new(self.next_seqnum, merged);
-        self.next_seqnum += 1;
+        let scan = SeqnumIter::new(self.visible_seqnum, merged);
         DbIterator {
             iter: scan,
             _marker: PhantomData,
@@ -255,22 +260,11 @@ mod test {
     use rand::Rng;
 
     use crate::{
-        encoding::{Decode, Encode},
         memtable::{KVIter, VecIter},
         sst::{reader::SstReader, writer::SstWriter},
     };
 
     use super::Db;
-
-    async fn test_db<K, V>() -> anyhow::Result<Db<K, V>>
-    where
-        K: Ord + Clone + Encode + Decode + Default,
-        V: Clone + Encode + Default + Encode + Decode,
-    {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().to_str().unwrap().to_owned();
-        Db::new(path).await
-    }
 
     #[tokio::test]
     // This is really slow.
@@ -297,6 +291,14 @@ mod test {
         let iter_data: Vec<_> = map.into_iter().collect();
 
         assert_eq!(db_data, iter_data);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_multi_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
+        panic!("no good")
     }
 
     #[test]

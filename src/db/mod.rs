@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     marker::PhantomData,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use crate::{
@@ -152,7 +155,7 @@ where
     dir: PathBuf,
     next_seqnum: usize,
     // The seqnum that is used for reads.
-    visible_seqnum: usize,
+    visible_seqnum: AtomicUsize,
 }
 
 impl<K, V> Db<K, V>
@@ -180,7 +183,7 @@ where
             wal_set: LogSet::open_dir(&dir).await?,
             dir: dir.as_ref().to_owned(),
             next_seqnum,
-            visible_seqnum: next_seqnum,
+            visible_seqnum: AtomicUsize::new(next_seqnum),
         })
     }
 
@@ -193,18 +196,43 @@ where
         self.layout.active_memtable.apply_command(cmd);
     }
 
+    fn ratchet_visible_seqnum(&mut self, v: usize) {
+        // TODO: understand these orderings better.
+        loop {
+            let cur_val = self.visible_seqnum.load(Ordering::SeqCst);
+            if cur_val >= v {
+                // Someone else might have ratcheted above us, which is fine.
+                break;
+            }
+            match self.visible_seqnum.compare_exchange(
+                cur_val,
+                v,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(v) => {
+                    // We did it!
+                    break;
+                }
+                Err(v) => {
+                    // We were unsuccessful, so try again.
+                }
+            }
+        }
+    }
+
     async fn insert(&mut self, k: K, v: V) {
         self.next_seqnum += 1;
         self.apply_command(DBCommand::Write(self.next_seqnum, k, v))
             .await;
-        self.visible_seqnum = self.next_seqnum;
+        self.ratchet_visible_seqnum(self.next_seqnum);
     }
 
     async fn delete(&mut self, k: K) {
         self.next_seqnum += 1;
         self.apply_command(DBCommand::Delete(self.next_seqnum, k))
             .await;
-        self.visible_seqnum = self.next_seqnum;
+        self.ratchet_visible_seqnum(self.next_seqnum);
     }
 
     fn scan(&mut self) -> DbIterator<K, V, impl KVIter<K, V>>

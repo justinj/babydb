@@ -1,4 +1,15 @@
-# The BabyDB Persistence Protocol
+# The BabyDB ~~Persistence Protocol~~ Commit Pipeline
+
+## Performing a write
+
+* Acquire the lock,
+* append the write to the WAL,
+* sync the WAL,
+* add the write to the memtable,
+* release the lock,
+* update the visible seqnum.
+
+# The BabyDB Persistence Protocol V1
 
 BabyDB guarantees linearizability and durability of all writes.  Imprecisely, this means, once a call to a mutation method (`insert`, `delete`) has returned, or the data written by it has been observed, that data will be observable until it has been overwritten, even in the presence of a crash.
 

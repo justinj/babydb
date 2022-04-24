@@ -2,7 +2,6 @@
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::File,
     marker::PhantomData,
     sync::atomic::{AtomicUsize, Ordering},
 };

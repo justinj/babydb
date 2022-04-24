@@ -1,8 +1,5 @@
 #![allow(dead_code)]
-use std::{
-    marker::PhantomData,
-    path::{Path, PathBuf},
-};
+use std::marker::PhantomData;
 
 use crate::{
     encoding::{Decode, Encode},

@@ -1,9 +1,3 @@
-use std::{
-    fs::{self, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-};
-
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::fs::{DbDir, DbFile};
@@ -46,7 +40,7 @@ where
         self.dir.rename(&"TMP_ROOT", &"ROOT");
 
         let mut file = self.dir.open(&"ROOT").unwrap();
-        file.sync();
+        file.sync().unwrap();
 
         self.data = t;
 

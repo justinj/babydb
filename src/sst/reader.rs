@@ -1,9 +1,7 @@
 #![allow(dead_code)]
 use std::{
-    fs::{File, OpenOptions},
     io::{Cursor, Read, Seek, SeekFrom},
     marker::PhantomData,
-    path::Path,
 };
 
 use crate::{

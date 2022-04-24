@@ -1,33 +1,31 @@
 use std::{
-    fs::File,
-    io::Read,
+    io::{Read, Seek},
     marker::PhantomData,
-    path::{Path, PathBuf},
 };
 
-use crate::encoding::{KeyReader, KeyWriter};
-use tokio::io::AsyncWriteExt;
+use crate::{
+    encoding::{KeyReader, KeyWriter},
+    fs::{DbDir, DbFile},
+};
 
 use super::LogEntry;
 
-pub struct LogReader<E>
+pub struct LogReader<R, E>
 where
+    R: Read + Seek,
     E: LogEntry,
 {
-    file: File,
+    file: R,
     reader: KeyReader,
     _marker: PhantomData<E>,
 }
 
-impl<E> LogReader<E>
+impl<R, E> LogReader<R, E>
 where
+    R: Read + Seek,
     E: LogEntry,
 {
-    pub fn new<P>(fname: P) -> anyhow::Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        let file = File::open(&fname)?;
+    pub fn new(file: R) -> anyhow::Result<Self> {
         Ok(Self {
             file,
             reader: KeyReader::new(),
@@ -36,8 +34,9 @@ where
     }
 }
 
-impl<E> Iterator for LogReader<E>
+impl<R, E> Iterator for LogReader<R, E>
 where
+    R: Read + Seek,
     E: LogEntry,
 {
     type Item = E;
@@ -65,35 +64,34 @@ where
 }
 
 #[derive(Debug)]
-pub struct Log<E>
+pub struct Log<D, E>
 where
+    D: DbDir,
     E: LogEntry,
 {
-    // TODO: does this do buffering or does this need to be a BufReader<File>?
-    file: tokio::fs::File,
-    file_name: PathBuf,
+    // TODO: does this do buffering?
+    file: D::DbFile,
+    filename: String,
     highest_seen_seqnum: usize,
     kw: KeyWriter,
     _marker: PhantomData<E>,
 }
 
-impl<E: LogEntry> Log<E> {
-    pub fn fname(&self) -> PathBuf {
-        self.file_name.clone()
+impl<D: DbDir, E: LogEntry> Log<D, E> {
+    pub fn fname(&self) -> &str {
+        self.filename.as_str()
     }
 
-    pub async fn new<P>(dir: &P, lower_bound: usize) -> anyhow::Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        tokio::fs::create_dir_all(dir).await?;
-        let file_name = dir.as_ref().join(format!("wal{}", lower_bound));
-        let file = tokio::fs::File::create(&file_name).await?;
+    pub fn new(mut dir: D, lower_bound: usize) -> anyhow::Result<Self> {
+        let filename = format!("wal{}", lower_bound);
+        println!("{:?}", dir.ls());
+        println!("{:?}", filename);
+        let mut file = dir.create(&filename).expect("WAL file already existed");
         // Ensure the file is created.
-        file.sync_all().await?;
+        file.sync()?;
         Ok(Self {
+            filename,
             file,
-            file_name,
             highest_seen_seqnum: lower_bound,
             kw: KeyWriter::new(),
             _marker: PhantomData,
@@ -103,11 +101,9 @@ impl<E: LogEntry> Log<E> {
     pub async fn write(&mut self, m: &E) -> anyhow::Result<()> {
         self.kw.clear();
         m.write_bytes(&mut self.kw);
-        self.file
-            .write_all(&(self.kw.buf.len() as u32).to_le_bytes())
-            .await?;
-        self.file.write_all(&self.kw.buf).await?;
-        self.file.sync_all().await?;
+        self.file.write(&(self.kw.buf.len() as u32).to_le_bytes())?;
+        self.file.write(&self.kw.buf)?;
+        self.file.sync()?;
 
         Ok(())
     }

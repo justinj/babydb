@@ -6,64 +6,48 @@ use std::{
 
 use serde::{de::DeserializeOwned, Serialize};
 
-pub struct Root<T>
+use crate::fs::{DbDir, DbFile};
+
+pub struct Root<T, D>
 where
     T: Serialize + DeserializeOwned + Default,
+    D: DbDir,
 {
-    dir: PathBuf,
+    dir: D,
     pub(crate) data: T,
 }
 
-impl<T> Root<T>
+impl<T, D> Root<T, D>
 where
     T: Serialize + DeserializeOwned + Default,
+    D: DbDir,
 {
-    pub fn load<P>(dir: &P) -> anyhow::Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        match fs::read_to_string(Self::path(dir.as_ref())) {
-            Ok(contents) => Ok(Self {
-                dir: dir.as_ref().to_owned(),
-                data: serde_json::from_str(contents.as_str())?,
+    pub fn load(mut dir: D) -> anyhow::Result<Self> {
+        match dir.open(&"ROOT") {
+            Some(f) => Ok(Self {
+                dir,
+                data: serde_json::from_slice(&f.read_all())?,
             }),
-            Err(_) => {
-                // TODO: check if this is a "did not exist" error
+            None => {
+                // Didn't exist, so create it with default values.
                 let data = T::default();
-                let mut result = Self {
-                    dir: dir.as_ref().to_owned(),
-                    data,
-                };
+                let mut result = Self { dir, data };
                 result.write(T::default())?;
                 Ok(result)
             }
         }
     }
 
-    fn path(dir: &std::path::Path) -> PathBuf {
-        dir.join("ROOT")
-    }
-
-    fn tmp_path(dir: &std::path::Path) -> PathBuf {
-        dir.join("ROOT_TMP")
-    }
-
     pub fn write(&mut self, t: T) -> anyhow::Result<()> {
-        let tmp_path = Self::tmp_path(self.dir.as_path());
-        let mut file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(&tmp_path)?;
+        self.dir.unlink(&"TMP_ROOT");
+        let mut file = self.dir.create(&"TMP_ROOT").unwrap();
         let encoded = serde_json::to_string(&t)?;
-        file.write_all(encoded.as_bytes())?;
-        // TODO: is this a no-op?
-        file.flush()?;
-        file.sync_all()?;
-        let path = Self::path(self.dir.as_path());
+        file.write(encoded.as_bytes())?;
+        self.dir.rename(&"TMP_ROOT", &"ROOT");
 
-        // TODO: I don't think this is guaranteed to be atomic on crash.
-        fs::rename(tmp_path, path)?;
+        let mut file = self.dir.open(&"ROOT").unwrap();
+        file.sync();
+
         self.data = t;
 
         Ok(())

@@ -2,16 +2,14 @@
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::{
+    fs::File,
     marker::PhantomData,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use crate::{
     encoding::{Decode, Encode},
+    fs::DbDir,
     log::{file_log::LogReader, LogEntry, LogSet},
     memtable::{KVIter, Memtable, MergingIter, SeqnumIter},
     root::Root,
@@ -105,8 +103,8 @@ where
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct DiskLayout {
-    ssts: Vec<PathBuf>,
-    wals: Vec<PathBuf>,
+    ssts: Vec<String>,
+    wals: Vec<String>,
 }
 
 impl DiskLayout {
@@ -124,7 +122,7 @@ where
     K: Ord,
 {
     active_memtable: Memtable<K, V>,
-    ssts: Vec<PathBuf>,
+    ssts: Vec<String>,
 }
 
 impl<K, V> Layout<K, V>
@@ -132,7 +130,7 @@ where
     K: Ord + Default + Clone + std::fmt::Debug + Encode + Decode,
     V: Default + Clone + std::fmt::Debug + Encode + Decode,
 {
-    fn new(memtable: Memtable<K, V>, ssts: Vec<PathBuf>) -> Self {
+    fn new(memtable: Memtable<K, V>, ssts: Vec<String>) -> Self {
         Layout {
             active_memtable: memtable,
             ssts,
@@ -144,34 +142,34 @@ where
     }
 }
 
-struct Db<K, V>
+struct Db<D, K, V>
 where
+    D: DbDir,
     K: std::fmt::Debug + Ord + Clone + Encode + Decode,
     V: std::fmt::Debug + Clone + Encode + Decode,
 {
-    root: Root<DiskLayout>,
+    root: Root<DiskLayout, D>,
     layout: Layout<K, V>,
-    wal_set: LogSet<DBCommand<K, V>>,
-    dir: PathBuf,
+    wal_set: LogSet<D, DBCommand<K, V>>,
+    dir: D,
     next_seqnum: usize,
     // The seqnum that is used for reads.
     visible_seqnum: AtomicUsize,
 }
 
-impl<K, V> Db<K, V>
+impl<D, K, V> Db<D, K, V>
 where
+    D: DbDir + 'static,
     K: Ord + Default + Clone + std::fmt::Debug + Decode + Encode,
     V: Default + Clone + std::fmt::Debug + Decode + Encode,
 {
-    async fn new<P>(dir: P) -> anyhow::Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        let root: Root<DiskLayout> = Root::load(&dir)?;
+    async fn new(mut dir: D) -> anyhow::Result<Self> {
+        let root: Root<DiskLayout, _> = Root::load(dir.clone())?;
         let mut memtable = Memtable::new();
         let mut next_seqnum = 0;
         for wal in root.data.wals.iter().rev() {
-            for command in LogReader::<DBCommand<K, V>>::new(wal)? {
+            let wal = dir.open(wal).unwrap();
+            for command in LogReader::<_, DBCommand<K, V>>::new(wal)? {
                 next_seqnum = std::cmp::max(command.seqnum(), next_seqnum);
                 memtable.apply_command(command)
             }
@@ -180,8 +178,8 @@ where
         Ok(Self {
             root,
             layout: Layout::new(memtable, ssts),
-            wal_set: LogSet::open_dir(&dir).await?,
-            dir: dir.as_ref().to_owned(),
+            wal_set: LogSet::open_dir(dir.clone(), next_seqnum).await?,
+            dir,
             next_seqnum,
             visible_seqnum: AtomicUsize::new(next_seqnum),
         })
@@ -210,11 +208,11 @@ where
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
-                Ok(v) => {
+                Ok(_v) => {
                     // We did it!
                     break;
                 }
-                Err(v) => {
+                Err(_v) => {
                     // We were unsuccessful, so try again.
                 }
             }
@@ -241,29 +239,32 @@ where
         V: 'static,
     {
         let tab = self.layout.active_memtable.scan();
-        let sst_merge: MergingIter<SstReader<(K, usize), Option<V>>, _, _> = MergingIter::new(
-            self.layout
-                .ssts
-                .iter()
-                .map(|fname| SstReader::load(fname).unwrap()),
-        );
+        let sst_merge: MergingIter<SstReader<(K, usize), Option<V>, D>, _, _> =
+            MergingIter::new(self.layout.ssts.iter().map(|fname| {
+                SstReader::load(self.dir.open(fname).expect("sst file did not exist")).unwrap()
+            }));
         let lhs: Box<dyn KVIter<(K, usize), Option<V>>> = Box::new(sst_merge);
         let merged = MergingIter::new([Box::new(tab), lhs]);
-        let scan = SeqnumIter::new(self.visible_seqnum, merged);
+        let scan = SeqnumIter::new(self.visible_seqnum.load(Ordering::SeqCst), merged);
         DbIterator {
             iter: scan,
             _marker: PhantomData,
         }
     }
 
-    async fn flush_memtable(&mut self) -> anyhow::Result<PathBuf> {
+    async fn flush_memtable(&mut self) -> anyhow::Result<String> {
         let scan = self.layout.active_memtable.scan();
 
         // TODO: include the lower bound?
         self.wal_set.fresh().await?;
 
-        let sst_path = self.dir.join(format!("sst{}.sst", self.next_seqnum));
-        let writer = SstWriter::new(scan, &sst_path);
+        let sst_path = format!("sst{}.sst", self.next_seqnum);
+
+        let sst_file = self
+            .dir
+            .create(&sst_path)
+            .expect("sst file already existed");
+        let writer = SstWriter::new(scan, sst_file);
         writer.write()?;
 
         self.wal_set.remove_old();
@@ -288,6 +289,7 @@ mod test {
     use rand::Rng;
 
     use crate::{
+        fs::{DbDir, MockDir},
         memtable::{KVIter, VecIter},
         sst::{reader::SstReader, writer::SstWriter},
     };
@@ -298,9 +300,9 @@ mod test {
     // This is really slow.
     #[ignore]
     async fn random_inserts() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = MockDir::new();
         let mut map = BTreeMap::new();
-        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
+        let mut db: Db<_, String, String> = Db::new(dir).await.unwrap();
 
         let mut rng = rand::thread_rng();
 
@@ -321,19 +323,12 @@ mod test {
         assert_eq!(db_data, iter_data);
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn test_multi_thread() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
-        panic!("no good")
-    }
-
     #[test]
     fn test_sst_iter() {
         datadriven::walk("src/sst/testdata/", |f| {
+            let mut dir = MockDir::new();
             let mut data = Vec::new();
-            let mut reader: Option<SstReader<(String, usize), Option<String>>> = None;
+            let mut reader: Option<SstReader<(String, usize), Option<String>, MockDir>> = None;
             f.run(|test_case| match test_case.directive.as_str() {
                 "insert" => {
                     for line in test_case.input.lines() {
@@ -353,9 +348,10 @@ mod test {
                 }
                 "flush" => {
                     let sst_fname = "/tmp/test_sst.sst";
-                    let writer = SstWriter::new(VecIter::new(Rc::new(data.clone())), sst_fname);
+                    let file = dir.create(&sst_fname).unwrap();
+                    let writer = SstWriter::new(VecIter::new(Rc::new(data.clone())), file);
                     writer.write().unwrap();
-                    reader = Some(SstReader::load(sst_fname).unwrap());
+                    reader = Some(SstReader::load(dir.open(&sst_fname).unwrap()).unwrap());
                     "ok\n".into()
                 }
                 "scan" => {
@@ -419,8 +415,8 @@ mod test {
 
     #[tokio::test]
     async fn test_insert() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
+        let dir = MockDir::new();
+        let mut db: Db<_, String, String> = Db::new(dir).await.unwrap();
         for i in 0..10 {
             db.insert(format!("sstkey{}", i), format!("bar{}", i)).await;
         }
@@ -465,8 +461,9 @@ mod test {
 
     #[tokio::test]
     async fn test_recover() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
+        let dir = MockDir::new();
+
+        let mut db: Db<_, String, String> = Db::new(dir.clone()).await.unwrap();
         for i in 0..10 {
             db.insert(format!("sstkey{}", i), format!("bar{}", i)).await;
         }
@@ -479,7 +476,7 @@ mod test {
 
         let prev_data: Vec<_> = db.scan().collect();
 
-        let mut db: Db<String, String> = Db::new(&dir).await.unwrap();
+        let mut db: Db<_, String, String> = Db::new(dir).await.unwrap();
 
         let post_data: Vec<_> = db.scan().collect();
 

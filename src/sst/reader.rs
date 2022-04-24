@@ -8,6 +8,7 @@ use std::{
 
 use crate::{
     encoding::{Decode, KeyReader},
+    fs::DbDir,
     memtable::KVIter,
 };
 
@@ -178,12 +179,13 @@ where
     }
 }
 
-pub struct SstReader<K, V>
+pub struct SstReader<K, V, D>
 where
     K: Decode + Default,
     V: Decode + Default,
+    D: DbDir,
 {
-    file: File,
+    file: D::DbFile,
     // (loc, len)
     index_block: Block<K, (u32, u32)>,
     current_block: Block<K, V>,
@@ -196,10 +198,11 @@ enum ReaderState {
     Midblock,
 }
 
-impl<K, V> KVIter<K, V> for SstReader<K, V>
+impl<K, V, D> KVIter<K, V> for SstReader<K, V, D>
 where
     K: Ord + Decode + Default + std::fmt::Debug,
     V: Decode + Default + std::fmt::Debug,
+    D: DbDir,
 {
     fn next(&mut self) -> Option<(&K, &V)> {
         match self.state {
@@ -289,10 +292,11 @@ where
     }
 }
 
-impl<K, V> SstReader<K, V>
+impl<K, V, D> SstReader<K, V, D>
 where
     K: Decode + Default + Ord + std::fmt::Debug,
     V: Decode + Default + std::fmt::Debug,
+    D: DbDir,
 {
     fn next_block(&mut self) -> anyhow::Result<bool> {
         match self.index_block.next() {
@@ -323,13 +327,7 @@ where
         }
     }
 
-    pub fn load<P>(fname: P) -> anyhow::Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        // TODO: check if already exists and fail if yes.
-        let mut file = OpenOptions::new().read(true).open(fname)?;
-
+    pub fn load(mut file: D::DbFile) -> anyhow::Result<Self> {
         file.seek(SeekFrom::End(-8))?;
         let mut buf = [0_u8; 4];
         file.read_exact(&mut buf)?;

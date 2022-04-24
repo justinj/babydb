@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     encoding::{Encode, KeyWriter},
+    fs::DbFile,
     memtable::KVIter,
 };
 
@@ -66,33 +67,26 @@ where
     }
 }
 
-pub struct SstWriter<I, K, V>
+pub struct SstWriter<I, K, V, D>
 where
     I: KVIter<K, V>,
     K: Ord + Encode,
     V: Encode,
+    D: DbFile,
 {
-    file: File,
+    file: D,
     it: I,
     _marker: PhantomData<(K, V)>,
 }
 
-impl<I, K, V> SstWriter<I, K, V>
+impl<I, K, V, D> SstWriter<I, K, V, D>
 where
     I: KVIter<K, V>,
     K: Ord + Encode + Clone,
     V: Encode,
+    D: DbFile,
 {
-    pub fn new<P>(it: I, fname: P) -> Self
-    where
-        P: AsRef<Path>,
-    {
-        let file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(fname)
-            .unwrap();
+    pub fn new(it: I, file: D) -> Self {
         SstWriter {
             file,
             it,
@@ -126,7 +120,7 @@ where
             let k = (*header_key).clone();
 
             self.build_block(&mut block_buffer)?;
-            self.file.write_all(&block_buffer)?;
+            self.file.write(&block_buffer)?;
 
             let index_entry = (k, (bytes_written as u32, block_buffer.len() as u32));
             index_writer.write(&index_entry)?;
@@ -139,13 +133,13 @@ where
         let data_length = bytes_written;
 
         // Write the index block.
-        self.file.write_all(&index)?;
+        self.file.write(&index)?;
         // Write the length of the data block.
-        self.file.write_all(&(data_length as u32).to_le_bytes())?;
+        self.file.write(&(data_length as u32).to_le_bytes())?;
         // Write the length of the index block.
-        self.file.write_all(&(index.len() as u32).to_le_bytes())?;
+        self.file.write(&(index.len() as u32).to_le_bytes())?;
 
-        self.file.sync_all()?;
+        self.file.sync()?;
 
         Ok(())
     }

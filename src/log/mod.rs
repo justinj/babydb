@@ -4,7 +4,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::encoding::{Decode, Encode};
+use crate::{
+    encoding::{Decode, Encode},
+    fs::DbDir,
+};
 
 use self::file_log::Log;
 
@@ -15,51 +18,42 @@ pub trait LogEntry: std::fmt::Debug + Clone + Encode + Decode {
 }
 
 #[derive(Debug)]
-pub struct LogSet<E: LogEntry> {
-    active_log: Log<E>,
-    old: Vec<Log<E>>,
-    dir: PathBuf,
+pub struct LogSet<D: DbDir, E: LogEntry> {
+    active_log: Log<D, E>,
+    old: Vec<Log<D, E>>,
+    dir: D,
     _marker: PhantomData<E>,
 }
 
-impl<E> LogSet<E>
+impl<D, E> LogSet<D, E>
 where
+    D: DbDir,
     E: LogEntry,
 {
-    pub fn fnames(&self) -> Vec<PathBuf> {
-        let mut out = vec![self.active_log.fname()];
-        out.extend(self.old.iter().map(|l| l.fname()));
+    pub fn fnames(&self) -> Vec<String> {
+        let mut out = vec![self.active_log.fname().to_owned()];
+        out.extend(self.old.iter().map(|l| l.fname().to_owned()));
         out
     }
 
-    pub async fn open_dir<P>(dir: &P) -> anyhow::Result<Self>
-    where
-        P: AsRef<Path>,
-    {
-        // TODO: what's the right starting seqnum?
-        let cur_seqnum = 0;
-        let active_log = Log::new(
-            &dir.as_ref().join(format!("wal-{}", cur_seqnum)),
-            cur_seqnum,
-        )
-        .await?;
+    pub async fn open_dir(dir: D, cur_seqnum: usize) -> anyhow::Result<Self> {
+        let active_log = Log::new(dir.clone(), cur_seqnum)?;
 
         Ok(LogSet {
             active_log,
             old: Vec::new(),
-            dir: dir.as_ref().to_owned(),
+            dir,
             _marker: PhantomData,
         })
     }
 
-    pub fn current(&mut self) -> &mut Log<E> {
+    pub fn current(&mut self) -> &mut Log<D, E> {
         &mut self.active_log
     }
 
     pub async fn fresh(&mut self) -> anyhow::Result<()> {
         let upper_bound = self.active_log.frontier();
-        let active_log =
-            Log::new(&self.dir.join(format!("wal-{}", upper_bound)), upper_bound).await?;
+        let active_log = Log::new(self.dir.clone(), upper_bound)?;
         let old_log = std::mem::replace(&mut self.active_log, active_log);
         self.old.push(old_log);
         Ok(())

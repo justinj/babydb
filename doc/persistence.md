@@ -1,5 +1,14 @@
 # The BabyDB ~~Persistence Protocol~~ Commit Pipeline
 
+# The BabyDB Persistence Protocol V2
+
+There are the following durability-relevant operations:
+
+* serving a read,
+* applying a write,
+* flushing a memtable,
+* swapping out an SST, and finally
+* recovery.
 ## Performing a write
 
 * Acquire the lock,

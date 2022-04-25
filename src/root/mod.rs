@@ -46,4 +46,13 @@ where
 
         Ok(())
     }
+
+    pub fn transform<F>(&mut self, f: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(T) -> T,
+    {
+        let new_data = f(std::mem::take(&mut self.data));
+        self.write(new_data)?;
+        Ok(())
+    }
 }

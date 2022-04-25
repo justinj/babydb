@@ -45,19 +45,20 @@ pub trait DbDir: Clone {
 #[derive(Default, Debug)]
 struct MockData {
     synced: Vec<u8>,
-    unsynced: Vec<(usize, Vec<u8>)>,
+    unsynced: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
 pub struct MockFile {
     idx: usize,
-    data: Rc<RefCell<MockData>>,
+    file_id: FileId,
+    fs: Rc<RefCell<MockFs>>,
 }
 
 impl MockFile {
     #[allow(unused)]
-    fn read_all_unsynced(&self) -> Vec<u8> {
-        (*self.data).borrow().synced.clone()
+    fn read_all_synced(&self) -> Vec<u8> {
+        (*self.fs).borrow_mut().data[self.file_id].synced.clone()
     }
 }
 
@@ -99,47 +100,25 @@ impl Read for MockFile {
 impl DbFile for MockFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<()> {
         let data = buf.to_vec();
-        self.idx += data.len();
-        (*self.data)
-            .borrow_mut()
-            .unsynced
-            .push((self.idx - data.len(), data));
+        (*self.fs).borrow_mut().write(self.file_id, self.idx, data);
+        self.idx += buf.len();
+
         Ok(())
     }
 
     fn sync(&mut self) -> io::Result<()> {
-        let mut d = (*self.data).borrow_mut();
-        let mut unsynced = std::mem::take(&mut d.unsynced);
-        for (idx, data) in unsynced.drain(..) {
-            for (i, b) in data.into_iter().enumerate() {
-                while i + idx >= d.synced.len() {
-                    d.synced.push(0);
-                }
-                d.synced[i + idx] = b;
-            }
-        }
-        d.unsynced = unsynced;
+        (*self.fs).borrow_mut().sync(self.file_id);
         Ok(())
     }
 
     fn read_all(&self) -> Vec<u8> {
-        let mut d = (*self.data).borrow_mut();
-        let mut out = d.synced.clone();
-        for (idx, data) in d.unsynced.drain(..) {
-            for (i, b) in data.into_iter().enumerate() {
-                while i + idx >= out.len() {
-                    out.push(0);
-                }
-                out[i + idx] = b;
-            }
-        }
-        out
+        (*self.fs).borrow_mut().data[self.file_id].unsynced.clone()
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct MockDir {
-    fs: Rc<RefCell<MockFs>>,
+    pub fs: Rc<RefCell<MockFs>>,
     prefix: Vec<String>,
 }
 
@@ -208,14 +187,28 @@ impl DbDir for MockDir {
     where
         P: AsRef<Path>,
     {
-        (*self.fs).borrow_mut().create(&self.full_path(fname))
+        (*self.fs)
+            .borrow_mut()
+            .create(&self.full_path(fname))
+            .map(|file_id| MockFile {
+                fs: self.fs.clone(),
+                file_id,
+                idx: 0,
+            })
     }
 
     fn open<P>(&mut self, fname: &P) -> Option<Self::DbFile>
     where
         P: AsRef<Path>,
     {
-        (*self.fs).borrow_mut().open(&self.full_path(fname))
+        (*self.fs)
+            .borrow_mut()
+            .open(&self.full_path(fname))
+            .map(|file_id| MockFile {
+                fs: self.fs.clone(),
+                file_id,
+                idx: 0,
+            })
     }
 
     fn rename<P, Q>(&mut self, from: &P, to: &Q)
@@ -229,10 +222,51 @@ impl DbDir for MockDir {
     }
 }
 
+type FileId = usize;
+
+#[derive(Debug, Clone)]
+pub enum Event {
+    Create(String, FileId),
+    Write(FileId, usize, Vec<u8>),
+    Sync(FileId),
+    Rename(String, String),
+    Unlink(String),
+    Open(String),
+}
+
+impl Event {
+    pub fn write_abbrev<W: std::fmt::Write>(&self, w: &mut W) -> std::fmt::Result {
+        match self {
+            Event::Create(name, file_id) => {
+                write!(w, "Create({}, {})", name, file_id)?;
+            }
+            Event::Write(file_id, idx, contents) => {
+                const MAX_LEN: usize = 50;
+                write!(w, "Write({}, {}, ", file_id, idx)?;
+                write!(w, "{})", String::from_utf8_lossy(contents))?;
+            }
+            Event::Sync(file_id) => {
+                write!(w, "Sync({})", file_id)?;
+            }
+            Event::Rename(from, to) => {
+                write!(w, "Rename({}, {})", from, to)?;
+            }
+            Event::Unlink(name) => {
+                write!(w, "Unlink({})", name)?;
+            }
+            Event::Open(name) => {
+                write!(w, "Open({})", name)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
-struct MockFs {
-    names: HashMap<String, usize>,
-    data: Vec<Rc<RefCell<MockData>>>,
+pub struct MockFs {
+    names: HashMap<String, FileId>,
+    data: Vec<MockData>,
+    events: Vec<Event>,
 }
 
 impl MockFs {
@@ -240,13 +274,26 @@ impl MockFs {
         MockFs {
             names: HashMap::new(),
             data: Vec::new(),
+            events: Vec::new(),
         }
+    }
+
+    fn record(&mut self, e: Event) {
+        self.events.push(e);
+    }
+
+    pub fn iter_events(&self) -> impl Iterator<Item = &Event> {
+        self.events.iter()
+    }
+
+    pub fn take_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
     }
 }
 
 impl MockFs {
     // TODO: support various writing modes?
-    fn create<P>(&mut self, fname: &P) -> Option<MockFile>
+    fn create<P>(&mut self, fname: &P) -> Option<FileId>
     where
         P: AsRef<Path>,
     {
@@ -256,18 +303,18 @@ impl MockFs {
                 return None;
             }
             None => {
-                let data = Rc::new(RefCell::new(MockData::default()));
+                let data = MockData::default();
                 let id = self.data.len();
+
+                self.record(Event::Create(path.clone(), id));
+
                 self.names.insert(path, id);
                 self.data.push(data);
                 id
             }
         };
 
-        Some(MockFile {
-            idx: 0,
-            data: self.data[id].clone(),
-        })
+        Some(id)
     }
 
     fn unlink<P>(&mut self, fname: &P) -> bool
@@ -275,25 +322,17 @@ impl MockFs {
         P: AsRef<Path>,
     {
         let path = fname.as_ref().to_str().unwrap();
+        self.record(Event::Unlink(path.to_owned()));
         self.names.remove(path).is_some()
     }
 
-    fn open<P>(&mut self, fname: &P) -> Option<MockFile>
+    fn open<P>(&mut self, fname: &P) -> Option<FileId>
     where
         P: AsRef<Path>,
     {
         let path = fname.as_ref().to_str().unwrap().to_owned();
-        let id = match self.names.get(&path) {
-            Some(id) => *id,
-            None => {
-                return None;
-            }
-        };
-
-        Some(MockFile {
-            idx: 0,
-            data: self.data[id].clone(),
-        })
+        self.record(Event::Open(path.to_owned()));
+        self.names.get(&path).cloned()
     }
 
     fn rename<P, Q>(&mut self, from: &P, to: &Q)
@@ -304,20 +343,43 @@ impl MockFs {
         let from = from.as_ref().to_str().unwrap().to_owned();
         let to = to.as_ref().to_str().unwrap().to_owned();
 
+        self.record(Event::Rename(from.clone(), to.clone()));
+
         if let Some(d) = self.names.remove(&from) {
             self.names.insert(to, d);
         }
+    }
+
+    fn write(&mut self, file: FileId, idx: usize, data: Vec<u8>) {
+        self.record(Event::Write(file, idx, data.clone()));
+
+        while self.data[file].unsynced.len() < idx + data.len() {
+            self.data[file].unsynced.push(0);
+        }
+
+        self.data[file].unsynced[idx..].copy_from_slice(&data);
+    }
+
+    fn sync(&mut self, file: FileId) {
+        self.record(Event::Sync(file));
+        let d = &mut self.data[file];
+        d.synced = d.unsynced.clone();
     }
 }
 
 #[test]
 fn test_mock_file() {
-    let mut fs = MockFs::new();
+    let mut dir = MockDir::new();
 
-    let mut a = fs.create(&"a").unwrap();
+    let mut a = dir.create(&"a").unwrap();
 
     a.write(&[1, 2, 3, 4]).unwrap();
+
+    assert_eq!(Vec::<u8>::new(), a.read_all_synced());
+    assert_eq!(vec![1, 2, 3, 4], a.read_all());
+
     a.sync().unwrap();
 
-    panic!("{:?} {:?}", a.read_all_unsynced(), a.read_all());
+    assert_eq!(vec![1, 2, 3, 4], a.read_all_synced());
+    assert_eq!(vec![1, 2, 3, 4], a.read_all());
 }

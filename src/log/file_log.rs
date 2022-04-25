@@ -84,8 +84,6 @@ impl<D: DbDir, E: LogEntry> Log<D, E> {
 
     pub fn new(mut dir: D, lower_bound: usize) -> anyhow::Result<Self> {
         let filename = format!("wal{}", lower_bound);
-        println!("{:?}", dir.ls());
-        println!("{:?}", filename);
         let mut file = dir.create(&filename).expect("WAL file already existed");
         // Ensure the file is created.
         file.sync()?;
@@ -98,7 +96,7 @@ impl<D: DbDir, E: LogEntry> Log<D, E> {
         })
     }
 
-    pub async fn write(&mut self, m: &E) -> anyhow::Result<()> {
+    pub fn write(&mut self, m: &E) -> anyhow::Result<()> {
         self.kw.clear();
         m.write_bytes(&mut self.kw);
         self.file.write(&(self.kw.buf.len() as u32).to_le_bytes())?;

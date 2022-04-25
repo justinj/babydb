@@ -22,6 +22,7 @@ pub struct LogSet<D: DbDir, E: LogEntry> {
     _marker: PhantomData<E>,
 }
 
+// TODO: this thing shouldn't exist I don't think. Let the layout keep track of the set of logs.
 impl<D, E> LogSet<D, E>
 where
     D: DbDir,
@@ -33,7 +34,7 @@ where
         out
     }
 
-    pub async fn open_dir(dir: D, cur_seqnum: usize) -> anyhow::Result<Self> {
+    pub fn open_dir(dir: D, cur_seqnum: usize) -> anyhow::Result<Self> {
         let active_log = Log::new(dir.clone(), cur_seqnum)?;
 
         Ok(LogSet {
@@ -48,7 +49,7 @@ where
         &mut self.active_log
     }
 
-    pub async fn fresh(&mut self) -> anyhow::Result<()> {
+    pub fn fresh(&mut self) -> anyhow::Result<()> {
         let upper_bound = self.active_log.frontier();
         let active_log = Log::new(self.dir.clone(), upper_bound)?;
         let old_log = std::mem::replace(&mut self.active_log, active_log);

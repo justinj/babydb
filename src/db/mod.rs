@@ -162,8 +162,8 @@ where
     K: Ord + Default + Clone + std::fmt::Debug + Decode + Encode,
     V: Default + Clone + std::fmt::Debug + Decode + Encode,
 {
-    async fn new(mut dir: D) -> anyhow::Result<Self> {
-        let root: Root<DiskLayout, _> = Root::load(dir.clone())?;
+    fn new(mut dir: D) -> anyhow::Result<Self> {
+        let mut root: Root<DiskLayout, _> = Root::load(dir.clone())?;
         let mut memtable = Memtable::new();
         let mut next_seqnum = 0;
         for wal in root.data.wals.iter().rev() {
@@ -174,18 +174,28 @@ where
             }
         }
         let ssts = root.data.ssts.iter().map(|path| path.into()).collect();
+
+        let mut wal_set = LogSet::open_dir(dir.clone(), next_seqnum)?;
+
+        // When we open we create a fresh WAL, so we need to add that to the root.
+        let new_wal_name = wal_set.current().fname().to_owned();
+        root.transform(move |mut layout| {
+            layout.wals.push(new_wal_name);
+            layout
+        });
+
         Ok(Self {
             root,
             layout: Layout::new(memtable, ssts),
-            wal_set: LogSet::open_dir(dir.clone(), next_seqnum).await?,
+            wal_set,
             dir,
             next_seqnum,
             visible_seqnum: AtomicUsize::new(next_seqnum),
         })
     }
 
-    async fn apply_command(&mut self, cmd: DBCommand<K, V>) {
-        self.wal_set.current().write(&cmd).await.unwrap();
+    fn apply_command(&mut self, cmd: DBCommand<K, V>) {
+        self.wal_set.current().write(&cmd).unwrap();
         self.apply_command_volatile(cmd);
     }
 
@@ -218,17 +228,15 @@ where
         }
     }
 
-    async fn insert(&mut self, k: K, v: V) {
+    fn insert(&mut self, k: K, v: V) {
         self.next_seqnum += 1;
-        self.apply_command(DBCommand::Write(self.next_seqnum, k, v))
-            .await;
+        self.apply_command(DBCommand::Write(self.next_seqnum, k, v));
         self.ratchet_visible_seqnum(self.next_seqnum);
     }
 
-    async fn delete(&mut self, k: K) {
+    fn delete(&mut self, k: K) {
         self.next_seqnum += 1;
-        self.apply_command(DBCommand::Delete(self.next_seqnum, k))
-            .await;
+        self.apply_command(DBCommand::Delete(self.next_seqnum, k));
         self.ratchet_visible_seqnum(self.next_seqnum);
     }
 
@@ -251,11 +259,11 @@ where
         }
     }
 
-    async fn flush_memtable(&mut self) -> anyhow::Result<String> {
+    fn flush_memtable(&mut self) -> anyhow::Result<String> {
         let scan = self.layout.active_memtable.scan();
 
         // TODO: include the lower bound?
-        self.wal_set.fresh().await?;
+        self.wal_set.fresh()?;
 
         let sst_path = format!("sst{}.sst", self.next_seqnum);
 
@@ -295,13 +303,13 @@ mod test {
 
     use super::Db;
 
-    #[tokio::test]
+    #[test]
     // This is really slow.
     #[ignore]
-    async fn random_inserts() {
+    fn random_inserts() {
         let dir = MockDir::new();
         let mut map = BTreeMap::new();
-        let mut db: Db<_, String, String> = Db::new(dir).await.unwrap();
+        let mut db: Db<_, String, String> = Db::new(dir).unwrap();
 
         let mut rng = rand::thread_rng();
 
@@ -309,10 +317,10 @@ mod test {
             let val: usize = rng.gen_range(0..100);
             let key = format!("key{}", val);
             let value = format!("value{}", i);
-            db.insert(key.clone(), value.clone()).await;
+            db.insert(key.clone(), value.clone());
             map.insert(key, value);
             if rng.gen_range(0_usize..100) == 0 {
-                db.flush_memtable().await.unwrap();
+                db.flush_memtable().unwrap();
             }
         }
 
@@ -320,6 +328,40 @@ mod test {
         let iter_data: Vec<_> = map.into_iter().collect();
 
         assert_eq!(db_data, iter_data);
+    }
+
+    #[test]
+    fn test_db_trace() {
+        datadriven::walk("src/db/testdata/", |f| {
+            let dir = MockDir::new();
+            let mut db: Db<_, String, String> = Db::new(dir.clone()).unwrap();
+            f.run(|test_case| match test_case.directive.as_str() {
+                "insert" => {
+                    for line in test_case.input.lines() {
+                        let eq_idx = line.find('=').unwrap();
+                        let key = line[0..eq_idx].to_owned();
+                        let val = line[eq_idx + 1..].to_owned();
+                        db.insert(key, val);
+                    }
+                    "ok\n".into()
+                }
+                "flush-memtable" => {
+                    db.flush_memtable().unwrap();
+                    "ok\n".into()
+                }
+                "trace" => {
+                    let mut result = String::new();
+                    for event in (*dir.fs).borrow_mut().take_events() {
+                        event.write_abbrev(&mut result).unwrap();
+                        result.push('\n');
+                    }
+                    result
+                }
+                _ => {
+                    panic!("unhandled");
+                }
+            })
+        })
     }
 
     #[test]
@@ -412,18 +454,18 @@ mod test {
         })
     }
 
-    #[tokio::test]
-    async fn test_insert() {
+    #[test]
+    fn test_insert() {
         let dir = MockDir::new();
-        let mut db: Db<_, String, String> = Db::new(dir).await.unwrap();
+        let mut db: Db<_, String, String> = Db::new(dir).unwrap();
         for i in 0..10 {
-            db.insert(format!("sstkey{}", i), format!("bar{}", i)).await;
+            db.insert(format!("sstkey{}", i), format!("bar{}", i));
         }
 
-        let _fname = db.flush_memtable().await.unwrap();
+        let _fname = db.flush_memtable().unwrap();
 
         for i in 10..20 {
-            db.insert(format!("memkey{}", i), format!("bar{}", i)).await;
+            db.insert(format!("memkey{}", i), format!("bar{}", i));
         }
 
         let iter = db.scan();
@@ -462,20 +504,20 @@ mod test {
     async fn test_recover() {
         let dir = MockDir::new();
 
-        let mut db: Db<_, String, String> = Db::new(dir.clone()).await.unwrap();
+        let mut db: Db<_, String, String> = Db::new(dir.clone()).unwrap();
         for i in 0..10 {
-            db.insert(format!("sstkey{}", i), format!("bar{}", i)).await;
+            db.insert(format!("sstkey{}", i), format!("bar{}", i));
         }
 
-        let _fname = db.flush_memtable().await.unwrap();
+        let _fname = db.flush_memtable().unwrap();
 
         for i in 10..20 {
-            db.insert(format!("memkey{}", i), format!("bar{}", i)).await;
+            db.insert(format!("memkey{}", i), format!("bar{}", i));
         }
 
         let prev_data: Vec<_> = db.scan().collect();
 
-        let mut db: Db<_, String, String> = Db::new(dir).await.unwrap();
+        let mut db: Db<_, String, String> = Db::new(dir).unwrap();
 
         let post_data: Vec<_> = db.scan().collect();
 

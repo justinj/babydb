@@ -1,0 +1,47 @@
+insert
+foo=bar
+bar=baz
+----
+ok
+
+flush-memtable
+----
+ok
+
+insert
+foo2=bar2
+bar2=baz2
+----
+ok
+
+flush-memtable
+----
+ok
+
+trace squelch
+----
+ok
+
+dump
+layout
+root
+----
+Layout {
+    active_memtable: Memtable {
+        prev_seqnum: 0,
+        entries: [],
+    },
+    ssts: [
+        "sst2.sst",
+        "sst4.sst",
+    ],
+}
+DiskLayout {
+    ssts: [
+        "sst2.sst",
+        "sst4.sst",
+    ],
+    wals: [
+        "wal4",
+    ],
+}

@@ -2,6 +2,7 @@
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     marker::PhantomData,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -9,7 +10,10 @@ use std::{
 use crate::{
     encoding::{Decode, Encode},
     fs::DbDir,
-    log::{file_log::LogReader, LogEntry, LogSet},
+    log::{
+        file_log::{Log, LogReader},
+        LogEntry, LogSet,
+    },
     memtable::{KVIter, Memtable, MergingIter, SeqnumIter},
     root::Root,
     sst::{reader::SstReader, writer::SstWriter},
@@ -149,7 +153,7 @@ where
 {
     root: Root<DiskLayout, D>,
     layout: Layout<K, V>,
-    wal_set: LogSet<D, DBCommand<K, V>>,
+    wal: Log<D, DBCommand<K, V>>,
     dir: D,
     next_seqnum: usize,
     // The seqnum that is used for reads.
@@ -166,28 +170,68 @@ where
         let mut root: Root<DiskLayout, _> = Root::load(dir.clone())?;
         let mut memtable = Memtable::new();
         let mut next_seqnum = 0;
-        for wal in root.data.wals.iter().rev() {
-            let wal = dir.open(wal).unwrap();
+        // Compute the seqnum we are to start at. It's the max of the seqnums provided by every data source.
+
+        let mut empty_wals = HashSet::new();
+        for wal_name in root.data.wals.iter().rev() {
+            let wal = dir.open(wal_name).unwrap();
+            let mut any = false;
             for command in LogReader::<_, DBCommand<K, V>>::new(wal)? {
-                next_seqnum = std::cmp::max(command.seqnum(), next_seqnum);
+                any = true;
+                next_seqnum = std::cmp::max(command.seqnum() + 1, next_seqnum);
                 memtable.apply_command(command)
             }
+            if !any {
+                empty_wals.insert(wal_name.clone());
+            }
         }
-        let ssts = root.data.ssts.iter().map(|path| path.into()).collect();
 
-        let mut wal_set = LogSet::open_dir(dir.clone(), next_seqnum)?;
+        // TODO: we should probably just declare that if we are attempting to
+        // create a WAL, if one already exists with that name, we can safely
+        // delete it (I believe this is true because it means that the given WAL
+        // had to be empty, or else it would have contained commands that bumped
+        // the seqnum).
+        if !empty_wals.is_empty() {
+            // If a given WAL has no commands in it, then unlink it and remove it
+            // from the set of WALs.
+            root.transform(|mut r| {
+                r.wals.retain(|w| !empty_wals.contains(w));
+                r
+            })?;
+            for wal in empty_wals {
+                dir.unlink(&wal);
+            }
+        }
+
+        let ssts: Vec<String> = root.data.ssts.iter().map(|path| path.into()).collect();
+
+        for sst_fname in &ssts {
+            // SST names are of the form "sst{}.sst", where {} is one greater
+            // than the largest seqnum provided by that SST.
+            // TODO: this should probably be stored in the SST itself (we can
+            // just stuff it at the end like the other stuff).
+            let largest_seqnum: usize = sst_fname
+                .strip_prefix("sst")
+                .and_then(|s| s.strip_suffix(".sst"))
+                .expect("sst filename was not as expected")
+                .parse()
+                .unwrap();
+            next_seqnum = std::cmp::max(largest_seqnum, next_seqnum);
+        }
+
+        let wal = Log::new(dir.clone(), next_seqnum)?;
 
         // When we open we create a fresh WAL, so we need to add that to the root.
-        let new_wal_name = wal_set.current().fname().to_owned();
+        let wal_name = wal.fname().to_owned();
         root.transform(move |mut layout| {
-            layout.wals.push(new_wal_name);
+            layout.wals.push(wal_name);
             layout
-        });
+        })?;
 
         Ok(Self {
             root,
             layout: Layout::new(memtable, ssts),
-            wal_set,
+            wal,
             dir,
             next_seqnum,
             visible_seqnum: AtomicUsize::new(next_seqnum),
@@ -195,7 +239,7 @@ where
     }
 
     fn apply_command(&mut self, cmd: DBCommand<K, V>) {
-        self.wal_set.current().write(&cmd).unwrap();
+        self.wal.write(&cmd).unwrap();
         self.apply_command_volatile(cmd);
     }
 
@@ -240,6 +284,22 @@ where
         self.ratchet_visible_seqnum(self.next_seqnum);
     }
 
+    fn get(&mut self, k: &K) -> Option<V>
+    where
+        K: 'static,
+        V: 'static,
+    {
+        let scan = self.scan();
+        let mut iter = scan.iter;
+        iter.seek_ge(k);
+        let next = iter.next()?;
+        if next.0 == k {
+            Some(next.1.clone())
+        } else {
+            None
+        }
+    }
+
     fn scan(&mut self) -> DbIterator<K, V, impl KVIter<K, V>>
     where
         K: 'static,
@@ -262,9 +322,6 @@ where
     fn flush_memtable(&mut self) -> anyhow::Result<String> {
         let scan = self.layout.active_memtable.scan();
 
-        // TODO: include the lower bound?
-        self.wal_set.fresh()?;
-
         let sst_path = format!("sst{}.sst", self.next_seqnum);
 
         let sst_file = self
@@ -274,14 +331,18 @@ where
         let writer = SstWriter::new(scan, sst_file);
         writer.write()?;
 
-        self.wal_set.remove_old();
-
         self.layout.flush_memtable();
         self.layout.ssts.push(sst_path.clone());
 
-        self.root.write(DiskLayout {
-            ssts: self.layout.ssts.clone(),
-            wals: self.wal_set.fnames(),
+        // TODO: include the lower bound?
+        self.wal = Log::new(self.dir.clone(), self.next_seqnum)?;
+        // When we open we create a fresh WAL, so we need to add that to the root.
+        let wal_name = self.wal.fname().to_owned();
+        let sst_name = sst_path.clone();
+        self.root.transform(move |mut layout| {
+            layout.wals = vec![wal_name];
+            layout.ssts.push(sst_name);
+            layout
         })?;
 
         Ok(sst_path)
@@ -291,7 +352,7 @@ where
 #[cfg(test)]
 mod test {
 
-    use std::{collections::BTreeMap, rc::Rc};
+    use std::{collections::BTreeMap, fmt::Write, rc::Rc};
 
     use rand::Rng;
 
@@ -345,6 +406,17 @@ mod test {
                     }
                     "ok\n".into()
                 }
+                "get" => {
+                    let key = test_case.input.trim();
+                    let iter = db.get(&key.to_owned());
+
+                    format!("{:?}\n", iter)
+                }
+                "scan" => db
+                    .scan()
+                    .map(|x| format!("{:?}\n", x))
+                    .collect::<Vec<_>>()
+                    .join(""),
                 "flush-memtable" => {
                     db.flush_memtable().unwrap();
                     "ok\n".into()
@@ -355,7 +427,26 @@ mod test {
                         event.write_abbrev(&mut result).unwrap();
                         result.push('\n');
                     }
-                    result
+                    if test_case.args.contains_key("squelch") {
+                        "ok\n".into()
+                    } else {
+                        result
+                    }
+                }
+                "dump" => {
+                    let mut out = String::new();
+                    for line in test_case.input.lines() {
+                        match line.trim() {
+                            "root" => writeln!(&mut out, "{:#?}", db.root.data).unwrap(),
+                            "layout" => writeln!(&mut out, "{:#?}", db.layout).unwrap(),
+                            _ => writeln!(&mut out, "can't dump {:?}", line.trim()).unwrap(),
+                        }
+                    }
+                    out
+                }
+                "reload" => {
+                    db = Db::new(dir.clone()).unwrap();
+                    "ok\n".into()
                 }
                 _ => {
                     panic!("unhandled");

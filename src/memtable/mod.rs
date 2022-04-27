@@ -62,8 +62,8 @@ where
 
 impl<I, K, V> SeqnumIter<I, K, V>
 where
-    K: Default + Eq + Ord + Clone,
-    V: Default + Clone,
+    K: Default + Eq + Ord + Clone + std::fmt::Debug,
+    V: Default + Clone + std::fmt::Debug,
     I: KVIter<(K, usize), Option<V>>,
 {
     pub fn new(seqnum: usize, iter: I) -> Self {
@@ -158,8 +158,8 @@ where
 
 impl<I, K, V> KVIter<K, V> for SeqnumIter<I, K, V>
 where
-    K: Default + Eq + Ord + Clone,
-    V: Default + Clone,
+    K: Default + Eq + Ord + Clone + std::fmt::Debug,
+    V: Default + Clone + std::fmt::Debug,
     I: KVIter<(K, usize), Option<V>>,
 {
     fn next(&mut self) -> Option<(&K, &V)> {
@@ -426,7 +426,8 @@ where
 impl<I, K, V> KVIter<K, V> for MergingIter<I, K, V>
 where
     I: KVIter<K, V>,
-    K: Ord,
+    K: Ord + std::fmt::Debug,
+    V: std::fmt::Debug,
 {
     fn peek(&mut self) -> Option<(&K, &V)> {
         let lowest = self.lowest()?;
@@ -643,9 +644,6 @@ where
     }
 
     fn insert_val(&mut self, s: usize, k: K, v: Option<V>) {
-        if s <= self.prev_seqnum {
-            panic!("seqnums must be strictly increasing")
-        }
         self.prev_seqnum = s;
         self.entries.push(Rc::new(vec![((k, s), v)]));
         for i in (0..(self.entries.len() - 1)).rev() {

@@ -79,6 +79,7 @@ where
     }
 }
 
+#[derive(Debug)]
 struct Block<K, V> {
     buf: Vec<u8>,
     scratch: Vec<u8>,
@@ -102,6 +103,10 @@ where
 
     fn seek_ge(&mut self, seek_key: &K) {
         self.idx = self.data.partition_point(|(k, _v)| k < seek_key);
+    }
+
+    fn seek_gt(&mut self, seek_key: &K) {
+        self.idx = self.data.partition_point(|(k, _v)| k <= seek_key);
     }
 
     fn align_end(&mut self) {
@@ -283,10 +288,14 @@ where
     }
 
     fn seek_ge(&mut self, key: &K) {
-        self.index_block.seek_ge(key);
+        self.index_block.seek_gt(key);
+        if self.index_block.idx > 0 {
+            self.index_block.idx -= 1;
+        }
         // TODO: how to handle errors here without infecting the nice simple traits?
         self.next_block().unwrap();
         self.current_block.seek_ge(key);
+        self.state = ReaderState::Midblock;
     }
 }
 

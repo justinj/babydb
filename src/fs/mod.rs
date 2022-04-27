@@ -174,13 +174,15 @@ impl DbDir for MockDir {
     }
 
     fn ls(&mut self) -> Vec<String> {
-        (*self.fs)
+        let fnames: Vec<String> = (*self.fs)
             .borrow_mut()
             .names
             .keys()
             .filter(|f| f.starts_with(&self.prefix.join("/")))
             .cloned()
-            .collect()
+            .collect();
+        (*self.fs).borrow_mut().record(Event::Ls(fnames.clone()));
+        fnames
     }
 
     fn create<P>(&mut self, fname: &P) -> Option<Self::DbFile>
@@ -232,6 +234,7 @@ pub enum Event {
     Rename(String, String),
     Unlink(String),
     Open(String),
+    Ls(Vec<String>),
 }
 
 impl Event {
@@ -241,7 +244,6 @@ impl Event {
                 write!(w, "Create({}, {})", name, file_id)?;
             }
             Event::Write(file_id, idx, contents) => {
-                const MAX_LEN: usize = 50;
                 write!(w, "Write({}, {}, ", file_id, idx)?;
                 write!(w, "{})", String::from_utf8_lossy(contents))?;
             }
@@ -256,6 +258,9 @@ impl Event {
             }
             Event::Open(name) => {
                 write!(w, "Open({})", name)?;
+            }
+            Event::Ls(names) => {
+                write!(w, "Ls() -> {:?}", names)?;
             }
         }
         Ok(())

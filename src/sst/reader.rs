@@ -196,9 +196,10 @@ where
     _marker: PhantomData<(K, V)>,
 }
 
+#[derive(Debug)]
 enum ReaderState {
-    AtStart,
-    Midblock,
+    LeftOfLoadedBlock,
+    RightOfLoadedBlock,
 }
 
 impl<K, V, D> KVIter<K, V> for SstReader<K, V, D>
@@ -208,80 +209,108 @@ where
     D: DbDir,
 {
     fn next(&mut self) -> Option<(&K, &V)> {
-        match self.state {
-            ReaderState::AtStart => {
-                // Load in the very first block.
-                if !self.next_block().unwrap() {
-                    None
-                } else {
-                    self.state = ReaderState::Midblock;
-                    self.current_block.next()
+        if self.current_block.peek().is_some() {
+            self.current_block.next()
+        } else {
+            match self.state {
+                ReaderState::RightOfLoadedBlock => {
+                    if !self.next_block().unwrap() {
+                        self.state = ReaderState::LeftOfLoadedBlock;
+                        None
+                    } else {
+                        self.state = ReaderState::RightOfLoadedBlock;
+                        self.current_block.next()
+                    }
                 }
-            }
-            ReaderState::Midblock => {
-                // TODO: figure out why we can't if let here
-                if self.current_block.peek().is_some() {
-                    self.current_block.next()
-                } else if !self.next_block().unwrap() {
-                    None
-                } else {
-                    self.current_block.next()
+                ReaderState::LeftOfLoadedBlock => {
+                    if !self.next_block().unwrap() || !self.next_block().unwrap() {
+                        self.state = ReaderState::LeftOfLoadedBlock;
+                        None
+                    } else {
+                        self.state = ReaderState::RightOfLoadedBlock;
+                        self.current_block.next()
+                    }
                 }
             }
         }
     }
 
     fn peek(&mut self) -> Option<(&K, &V)> {
-        match self.state {
-            ReaderState::AtStart => {
-                // Load in the very first block.
-                if !self.next_block().unwrap() {
-                    None
-                } else {
-                    self.state = ReaderState::Midblock;
-                    self.current_block.peek()
+        if self.current_block.peek().is_some() {
+            self.current_block.peek()
+        } else {
+            match self.state {
+                ReaderState::RightOfLoadedBlock => {
+                    if !self.next_block().unwrap() {
+                        self.state = ReaderState::LeftOfLoadedBlock;
+                        None
+                    } else {
+                        self.state = ReaderState::RightOfLoadedBlock;
+                        self.current_block.peek()
+                    }
                 }
-            }
-            ReaderState::Midblock => {
-                // TODO: figure out why we can't if let here
-                if self.current_block.peek().is_some() {
-                    self.current_block.peek()
-                } else if !self.next_block().unwrap() {
-                    None
-                } else {
-                    self.current_block.peek()
+                ReaderState::LeftOfLoadedBlock => {
+                    if !self.next_block().unwrap() || !self.next_block().unwrap() {
+                        self.state = ReaderState::LeftOfLoadedBlock;
+                        None
+                    } else {
+                        self.state = ReaderState::RightOfLoadedBlock;
+                        self.current_block.peek()
+                    }
                 }
             }
         }
     }
 
     fn prev(&mut self) -> Option<(&K, &V)> {
-        match self.state {
-            ReaderState::AtStart => None,
-            ReaderState::Midblock => {
-                // TODO: figure out why we can't if let here
-                if self.current_block.peek_prev().is_some() {
-                    self.current_block.prev()
-                } else if !self.prev_block().unwrap() {
-                    None
-                } else {
-                    self.current_block.prev()
+        if self.current_block.peek_prev().is_some() {
+            self.current_block.prev()
+        } else {
+            match self.state {
+                ReaderState::LeftOfLoadedBlock => {
+                    if !self.prev_block().unwrap() {
+                        self.state = ReaderState::RightOfLoadedBlock;
+                        None
+                    } else {
+                        self.state = ReaderState::LeftOfLoadedBlock;
+                        self.current_block.prev()
+                    }
+                }
+                ReaderState::RightOfLoadedBlock => {
+                    if !self.prev_block().unwrap() || !self.prev_block().unwrap() {
+                        self.state = ReaderState::RightOfLoadedBlock;
+                        None
+                    } else {
+                        self.state = ReaderState::LeftOfLoadedBlock;
+                        self.current_block.prev()
+                    }
                 }
             }
         }
     }
 
     fn peek_prev(&mut self) -> Option<(&K, &V)> {
-        match self.state {
-            ReaderState::AtStart => None,
-            ReaderState::Midblock => {
-                // TODO: figure out why we can't if let here
-                if self.current_block.peek_prev().is_some() {
-                    self.current_block.peek_prev()
-                } else if !self.prev_block().unwrap() {
-                    None
-                } else {
-                    self.current_block.peek_prev()
+        if self.current_block.peek_prev().is_some() {
+            self.current_block.peek_prev()
+        } else {
+            match self.state {
+                ReaderState::LeftOfLoadedBlock => {
+                    if !self.prev_block().unwrap() {
+                        self.state = ReaderState::RightOfLoadedBlock;
+                        None
+                    } else {
+                        self.state = ReaderState::LeftOfLoadedBlock;
+                        self.current_block.peek_prev()
+                    }
+                }
+                ReaderState::RightOfLoadedBlock => {
+                    if !self.prev_block().unwrap() || !self.prev_block().unwrap() {
+                        self.state = ReaderState::RightOfLoadedBlock;
+                        None
+                    } else {
+                        self.state = ReaderState::LeftOfLoadedBlock;
+                        self.current_block.peek_prev()
+                    }
                 }
             }
         }
@@ -295,7 +324,21 @@ where
         // TODO: how to handle errors here without infecting the nice simple traits?
         self.next_block().unwrap();
         self.current_block.seek_ge(key);
-        self.state = ReaderState::Midblock;
+        self.state = ReaderState::RightOfLoadedBlock;
+    }
+
+    fn start(&mut self) {
+        self.index_block.align_start();
+        self.state = ReaderState::LeftOfLoadedBlock;
+        self.next_block().unwrap();
+    }
+
+    fn end(&mut self) {
+        self.index_block.align_end();
+        self.state = ReaderState::RightOfLoadedBlock;
+        self.prev_block().unwrap();
+        self.index_block.idx += 1;
+        self.current_block.align_end();
     }
 }
 
@@ -305,9 +348,21 @@ where
     V: Decode + Default + std::fmt::Debug,
     D: DbDir,
 {
+    pub fn print_state(&self) -> String {
+        format!(
+            "[{} {} {:?}]",
+            self.index_block.idx, self.current_block.idx, self.state
+        )
+    }
+
     fn next_block(&mut self) -> anyhow::Result<bool> {
         match self.index_block.next() {
-            None => Ok(false),
+            None => {
+                // Load the empty block.
+                // TODO: just blank out the memory?
+                self.current_block = Block::new();
+                Ok(false)
+            }
             Some((_k, (loc, len))) => {
                 // TODO: check if loc is where we already are and don't move if so.
                 self.file.seek(SeekFrom::Start(*loc as u64))?;
@@ -322,7 +377,12 @@ where
     // TODO: coalesce with above.
     fn prev_block(&mut self) -> anyhow::Result<bool> {
         match self.index_block.prev() {
-            None => Ok(false),
+            None => {
+                // Load the empty block.
+                // TODO: just blank out the memory?
+                self.current_block = Block::new();
+                Ok(false)
+            }
             Some((_k, (loc, len))) => {
                 // TODO: check if loc is where we already are and don't move if so.
                 self.file.seek(SeekFrom::Start(*loc as u64))?;
@@ -359,8 +419,157 @@ where
             file,
             current_block: Block::new(),
             index_block,
-            state: ReaderState::AtStart,
+            state: ReaderState::RightOfLoadedBlock,
             _marker: PhantomData,
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::rc::Rc;
+
+    use rand::Rng;
+
+    use crate::{
+        fs::{DbDir, MockDir},
+        memtable::{KVIter, VecIter},
+        sst::writer::SstWriter,
+    };
+
+    use super::SstReader;
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Next,
+        Peek,
+        Prev,
+        PeekPrev,
+        Start,
+        End,
+    }
+
+    fn results_match(data: &[((String, usize), Option<String>)], ops: &[Op], show: bool) -> bool {
+        let mut dir = MockDir::new();
+
+        let mut vec_iter = VecIter::new(Rc::new(data.to_vec()));
+
+        let sst_fname = "/tmp/test_sst.sst";
+        let file = dir.create(&sst_fname).unwrap();
+        let data_source = vec_iter.clone();
+        let writer = SstWriter::new(data_source, file);
+        writer.write().unwrap();
+        let mut reader: SstReader<(String, usize), Option<String>, MockDir> =
+            SstReader::load(dir.open(&sst_fname).unwrap()).unwrap();
+
+        let mut vec_result = Vec::new();
+        let mut sst_result = Vec::new();
+        for op in ops {
+            match op {
+                Op::Next => {
+                    let next = vec_iter.next();
+                    vec_result.push(next.map(|x| (x.0.clone(), x.1.clone())));
+
+                    let next = reader.next();
+                    sst_result.push(next.map(|x| (x.0.clone(), x.1.clone())));
+                }
+                Op::Peek => {
+                    let next = vec_iter.peek();
+                    vec_result.push(next.map(|x| (x.0.clone(), x.1.clone())));
+
+                    let next = reader.peek();
+                    sst_result.push(next.map(|x| (x.0.clone(), x.1.clone())));
+                }
+                Op::Prev => {
+                    let next = vec_iter.prev();
+                    vec_result.push(next.map(|x| (x.0.clone(), x.1.clone())));
+
+                    let next = reader.prev();
+                    sst_result.push(next.map(|x| (x.0.clone(), x.1.clone())));
+                }
+                Op::PeekPrev => {
+                    let next = vec_iter.peek_prev();
+                    vec_result.push(next.map(|x| (x.0.clone(), x.1.clone())));
+
+                    let next = reader.peek_prev();
+                    sst_result.push(next.map(|x| (x.0.clone(), x.1.clone())));
+                }
+                Op::Start => {
+                    vec_iter.start();
+                    reader.start();
+                }
+                Op::End => {
+                    vec_iter.end();
+                    reader.end();
+                }
+            }
+        }
+        if show {
+            println!("vec result = {:?}", vec_result);
+            println!("sst result = {:?}", sst_result);
+        }
+
+        vec_result == sst_result
+    }
+
+    #[test]
+    fn reader_test() {
+        let mut data: Vec<_> = (0..500)
+            .map(|i| ((format!("key{}", i), i), Some(format!("val{}", i))))
+            .collect();
+
+        let mut r = rand::thread_rng();
+        let mut ops = Vec::new();
+        for _ in 0..500 {
+            match r.gen_range(0..4) {
+                0 => ops.push(Op::Next),
+                1 => ops.push(Op::Prev),
+                2 => ops.push(Op::Peek),
+                3 => ops.push(Op::PeekPrev),
+                4 => ops.push(Op::Start),
+                5 => ops.push(Op::End),
+                _ => unreachable!(),
+            }
+        }
+
+        if !results_match(&data, &ops, false) {
+            // Simplify the results.
+            loop {
+                let mut better = None;
+                for i in 0..data.len() {
+                    let mut new_data = data.clone();
+                    new_data.remove(i);
+                    if !results_match(&new_data, &ops, false) {
+                        better = Some(new_data);
+                        break;
+                    }
+                }
+                if let Some(d) = better {
+                    data = d;
+                    continue;
+                }
+
+                let mut better = None;
+                for i in 0..ops.len() {
+                    let mut new_ops = ops.clone();
+                    new_ops.remove(i);
+                    if !results_match(&data, &new_ops, false) {
+                        better = Some(new_ops);
+                        break;
+                    }
+                }
+                if let Some(o) = better {
+                    ops = o;
+                    continue;
+                }
+
+                break;
+            }
+
+            println!("results match: {}", results_match(&data, &ops, true));
+            println!("{:?}", data);
+            println!("{:?}", ops);
+            panic!("results did not match")
+        }
     }
 }

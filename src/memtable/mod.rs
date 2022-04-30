@@ -16,6 +16,9 @@ where
     // Positions the iterator to the left of the first location the key is >=
     // to.
     fn seek_ge(&mut self, key: &K);
+
+    fn start(&mut self);
+    fn end(&mut self);
 }
 
 impl<K, V, T: KVIter<K, V> + ?Sized> KVIter<K, V> for Box<T>
@@ -36,6 +39,12 @@ where
     }
     fn seek_ge(&mut self, key: &K) {
         (**self).seek_ge(key)
+    }
+    fn start(&mut self) {
+        (**self).start()
+    }
+    fn end(&mut self) {
+        (**self).end()
     }
 }
 
@@ -284,9 +293,21 @@ where
         self.physical_forwards();
         self.state = PhysicalState::FwdBehind;
     }
+
+    fn start(&mut self) {
+        self.iter.start();
+        self.state = PhysicalState::FwdBehind;
+        self.physical_forwards();
+    }
+
+    fn end(&mut self) {
+        self.iter.end();
+        self.state = PhysicalState::RevBehind;
+        self.physical_reverse();
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VecIter<K, V> {
     idx: usize,
     contents: Rc<Vec<(K, V)>>,
@@ -353,6 +374,14 @@ where
             Err(x) => x,
         };
         self.idx = idx;
+    }
+
+    fn start(&mut self) {
+        self.idx = 0;
+    }
+
+    fn end(&mut self) {
+        self.idx = self.contents.len();
     }
 }
 
@@ -452,6 +481,18 @@ where
     fn seek_ge(&mut self, key: &K) {
         for it in self.iters.iter_mut() {
             it.seek_ge(key);
+        }
+    }
+
+    fn start(&mut self) {
+        for it in self.iters.iter_mut() {
+            it.start();
+        }
+    }
+
+    fn end(&mut self) {
+        for it in self.iters.iter_mut() {
+            it.end();
         }
     }
 }

@@ -13,28 +13,39 @@ flush
 ok
 
 scan
->>>>>><<
+?>?>?>?>?>?>?<?<?<?
 ----
+? [0 0 RightOfLoadedBlock]
 > ("baz", 2)=Some("baz2")
+? [1 1 RightOfLoadedBlock]
 > ("baz", 3)=Some("baz3")
+? [1 2 RightOfLoadedBlock]
 > ("baz", 4)=Some("baz4")
+? [2 1 RightOfLoadedBlock]
 > ("foo", 1)=Some("foo1")
+? [2 2 RightOfLoadedBlock]
 > ("foo", 2)=Some("foo2")
+? [3 1 RightOfLoadedBlock]
 > ("foo", 3)=Some("foo3")
+? [3 2 RightOfLoadedBlock]
 < ("foo", 3)=Some("foo3")
+? [3 1 RightOfLoadedBlock]
 < ("foo", 2)=Some("foo2")
+? [3 0 RightOfLoadedBlock]
+< ("foo", 1)=Some("foo1")
+? [1 1 LeftOfLoadedBlock]
 
 scan
 ))))<)()
 ----
-) ("foo", 2)=Some("foo2")
-) ("foo", 2)=Some("foo2")
-) ("foo", 2)=Some("foo2")
-) ("foo", 2)=Some("foo2")
-< ("foo", 3)=Some("foo3")
-) ("foo", 3)=Some("foo3")
-( ("foo", 2)=Some("foo2")
-) ("foo", 3)=Some("foo3")
+) ("foo", 1)=Some("foo1")
+) ("foo", 1)=Some("foo1")
+) ("foo", 1)=Some("foo1")
+) ("foo", 1)=Some("foo1")
+< ("baz", 4)=Some("baz4")
+) ("baz", 4)=Some("baz4")
+( ("baz", 3)=Some("baz3")
+) ("baz", 2)=Some("baz2")
 
 seek-ge key=(foo, 2)
 ----
@@ -47,3 +58,44 @@ Some((("baz", 2), Some("baz2")))
 seek-ge key=(foo, 100)
 ----
 None
+
+start
+----
+ok
+
+scan
+>>>
+----
+> ("baz", 2)=Some("baz2")
+> ("baz", 3)=Some("baz3")
+> ("baz", 4)=Some("baz4")
+
+scan
+>>>>>>>><<<
+----
+> ("foo", 1)=Some("foo1")
+> ("foo", 2)=Some("foo2")
+> ("foo", 3)=Some("foo3")
+> eof
+> eof
+> eof
+> eof
+> eof
+< ("foo", 3)=Some("foo3")
+< ("foo", 2)=Some("foo2")
+< ("foo", 1)=Some("foo1")
+
+end
+----
+ok
+
+scan
+><<<<<<
+----
+> eof
+< ("foo", 3)=Some("foo3")
+< ("foo", 2)=Some("foo2")
+< ("foo", 1)=Some("foo1")
+< ("baz", 4)=Some("baz4")
+< ("baz", 3)=Some("baz3")
+< ("baz", 2)=Some("baz2")

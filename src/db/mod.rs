@@ -486,6 +486,14 @@ mod test {
                     reader = Some(SstReader::load(dir.open(&sst_fname).unwrap()).unwrap());
                     "ok\n".into()
                 }
+                "start" => {
+                    reader.as_mut().unwrap().start();
+                    "ok\n".into()
+                }
+                "end" => {
+                    reader.as_mut().unwrap().end();
+                    "ok\n".into()
+                }
                 "scan" => {
                     let mut out = String::new();
                     for command in test_case.input.trim().chars() {
@@ -506,6 +514,8 @@ mod test {
                                     out.push_str(&format!(") {:?}={:?}", k, v));
                                 }
                             },
+                            '?' => write!(&mut out, "? {}", reader.as_ref().unwrap().print_state())
+                                .unwrap(),
                             '<' => match reader.as_mut().unwrap().prev() {
                                 None => {
                                     out.push_str("< eof");

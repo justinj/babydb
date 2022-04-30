@@ -1,0 +1,17 @@
+insert
+a=b@1
+----
+ok
+
+flush
+----
+ok
+
+scan
+>><>>
+----
+> ("a", 1)=Some("b")
+> eof
+< ("a", 1)=Some("b")
+> ("a", 1)=Some("b")
+> eof

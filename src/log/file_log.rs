@@ -83,6 +83,9 @@ impl<D: DbDir, E: LogEntry> Log<D, E> {
 
     pub fn new(mut dir: D, lower_bound: usize) -> anyhow::Result<Self> {
         let filename = format!("wal{}", lower_bound);
+        // We can safely delete the WAL if it already existed here.
+        // TODO: why? I think it's because we determined that if it exists it has to be empty?
+        dir.unlink(&filename);
         let mut file = dir.create(&filename).expect("WAL file already existed");
         // Ensure the file is created.
         file.sync()?;

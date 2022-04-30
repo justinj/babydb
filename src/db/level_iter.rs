@@ -2,7 +2,8 @@ use std::marker::PhantomData;
 
 use crate::memtable::KVIter;
 
-struct LevelIter<K, V, I>
+#[derive(Debug)]
+pub struct LevelIter<K, V, I>
 where
     K: Ord,
     I: KVIter<K, V>,
@@ -18,7 +19,7 @@ where
     K: Clone + Ord,
     I: KVIter<K, V>,
 {
-    fn new<C: IntoIterator<Item = I>>(c: C) -> Self {
+    pub fn new<C: IntoIterator<Item = I>>(c: C) -> Self {
         let mut index: Vec<(K, usize)> = Vec::new();
         let mut iters = Vec::new();
         for (i, mut v) in c.into_iter().enumerate() {

@@ -182,6 +182,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct SstReader<K, V, D>
 where
     K: Decode + Default,

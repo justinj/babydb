@@ -31,16 +31,22 @@ Layout {
         prev_seqnum: 0,
         entries: [],
     },
-    ssts: [
-        "sst2.sst",
-        "sst4.sst",
+    l0: [
+        Sst {
+            filename: "sst2.sst",
+        },
+        Sst {
+            filename: "sst4.sst",
+        },
     ],
+    ssts: [],
 }
 DiskLayout {
-    ssts: [
+    l0: [
         "sst2.sst",
         "sst4.sst",
     ],
+    ssts: [],
     wals: [
         "wal4",
     ],

@@ -19,6 +19,8 @@ use crate::{
     sst::{reader::SstReader, writer::SstWriter},
 };
 
+use self::level_iter::LevelIter;
+
 mod level_iter;
 
 struct DbIterator<K, V, I>
@@ -108,17 +110,24 @@ where
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct DiskLayout {
-    ssts: Vec<String>,
+    l0: Vec<String>,
+    ssts: Vec<Vec<String>>,
     wals: Vec<String>,
 }
 
 impl DiskLayout {
     fn new() -> Self {
         DiskLayout {
+            l0: Vec::new(),
             ssts: Vec::new(),
             wals: Vec::new(),
         }
     }
+}
+
+#[derive(Debug)]
+struct Sst {
+    filename: String,
 }
 
 #[derive(Debug)]
@@ -127,7 +136,8 @@ where
     K: Ord,
 {
     active_memtable: Memtable<K, V>,
-    ssts: Vec<String>,
+    l0: Vec<Sst>,
+    ssts: Vec<Vec<Sst>>,
 }
 
 impl<K, V> Layout<K, V>
@@ -135,9 +145,10 @@ where
     K: Ord + Default + Clone + std::fmt::Debug + Encode + Decode,
     V: Default + Clone + std::fmt::Debug + Encode + Decode,
 {
-    fn new(memtable: Memtable<K, V>, ssts: Vec<String>) -> Self {
+    fn new(memtable: Memtable<K, V>, l0: Vec<Sst>, ssts: Vec<Vec<Sst>>) -> Self {
         Layout {
             active_memtable: memtable,
+            l0,
             ssts,
         }
     }
@@ -164,7 +175,7 @@ where
 
 impl<D, K, V> Db<D, K, V>
 where
-    D: DbDir + 'static,
+    D: DbDir + std::fmt::Debug + 'static,
     K: Ord + Default + Clone + std::fmt::Debug + Decode + Encode,
     V: Default + Clone + std::fmt::Debug + Decode + Encode,
 {
@@ -205,20 +216,43 @@ where
             }
         }
 
-        let ssts: Vec<String> = root.data.ssts.iter().map(|path| path.into()).collect();
+        let l0 = root
+            .data
+            .l0
+            .iter()
+            .map(|filename| Sst {
+                filename: filename.clone(),
+            })
+            .collect();
+        let ssts: Vec<Vec<Sst>> = root
+            .data
+            .ssts
+            .iter()
+            .map(|level| {
+                level
+                    .iter()
+                    .map(|filename| Sst {
+                        filename: filename.clone(),
+                    })
+                    .collect()
+            })
+            .collect();
 
-        for sst_fname in &ssts {
-            // SST names are of the form "sst{}.sst", where {} is one greater
-            // than the largest seqnum provided by that SST.
-            // TODO: this should probably be stored in the SST itself (we can
-            // just stuff it at the end like the other stuff).
-            let largest_seqnum: usize = sst_fname
-                .strip_prefix("sst")
-                .and_then(|s| s.strip_suffix(".sst"))
-                .expect("sst filename was not as expected")
-                .parse()
-                .unwrap();
-            next_seqnum = std::cmp::max(largest_seqnum, next_seqnum);
+        for level in &ssts {
+            for sst in level {
+                // SST names are of the form "sst{}.sst", where {} is one greater
+                // than the largest seqnum provided by that SST.
+                // TODO: this should probably be stored in the SST itself (we can
+                // just stuff it at the end like the other stuff).
+                let largest_seqnum: usize = sst
+                    .filename
+                    .strip_prefix("sst")
+                    .and_then(|s| s.strip_suffix(".sst"))
+                    .expect("sst filename was not as expected")
+                    .parse()
+                    .unwrap();
+                next_seqnum = std::cmp::max(largest_seqnum, next_seqnum);
+            }
         }
 
         let wal = Log::new(dir.clone(), next_seqnum)?;
@@ -232,7 +266,7 @@ where
 
         Ok(Self {
             root,
-            layout: Layout::new(memtable, ssts),
+            layout: Layout::new(memtable, l0, ssts),
             wal,
             dir,
             next_seqnum,
@@ -308,10 +342,33 @@ where
         V: 'static,
     {
         let tab = self.layout.active_memtable.scan();
-        let sst_merge: MergingIter<SstReader<(K, usize), Option<V>, D>, _, _> =
-            MergingIter::new(self.layout.ssts.iter().map(|fname| {
-                SstReader::load(self.dir.open(fname).expect("sst file did not exist")).unwrap()
-            }));
+
+        // Every SST in L0 is read independently, but the lower-level ones get
+        // concatenated.
+        let mut level_readers = Vec::new();
+        for sst in &self.layout.l0 {
+            level_readers.push(LevelIter::new(SstReader::load(
+                self.dir
+                    .open(&sst.filename)
+                    .expect("sst file did not exist"),
+            )))
+        }
+
+        for level in &self.layout.ssts {
+            let readers = level.iter().map(|sst| {
+                SstReader::load(
+                    self.dir
+                        .open(&sst.filename)
+                        .expect("sst file did not exist"),
+                )
+                .unwrap()
+            });
+            level_readers.push(LevelIter::new(readers))
+        }
+
+        let sst_merge: MergingIter<LevelIter<_, _, SstReader<(K, usize), Option<V>, D>>, _, _> =
+            MergingIter::new(level_readers);
+
         let lhs: Box<dyn KVIter<(K, usize), Option<V>>> = Box::new(sst_merge);
         let merged = MergingIter::new([Box::new(tab), lhs]);
         let scan = SeqnumIter::new(self.visible_seqnum.load(Ordering::SeqCst), merged);
@@ -334,7 +391,10 @@ where
         writer.write()?;
 
         self.layout.flush_memtable();
-        self.layout.ssts.push(sst_path.clone());
+        // Add it to L0.
+        self.layout.l0.push(Sst {
+            filename: sst_path.clone(),
+        });
 
         // TODO: include the lower bound?
         self.wal = Log::new(self.dir.clone(), self.next_seqnum)?;
@@ -343,7 +403,7 @@ where
         let sst_name = sst_path.clone();
         self.root.transform(move |mut layout| {
             layout.wals = vec![wal_name];
-            layout.ssts.push(sst_name);
+            layout.l0.push(sst_name);
             layout
         })?;
 

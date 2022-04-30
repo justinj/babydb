@@ -385,6 +385,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct MergingIter<I, K, V>
 where
     K: Ord,
@@ -479,6 +480,8 @@ where
     }
 
     fn seek_ge(&mut self, key: &K) {
+        // TODO: in the case where we're just searching for a single key _ever_,
+        // we can optimize this by not looking at the lower levels.
         for it in self.iters.iter_mut() {
             it.seek_ge(key);
         }

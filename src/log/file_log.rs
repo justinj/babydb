@@ -72,7 +72,6 @@ where
     // TODO: does this do buffering?
     file: D::DbFile,
     filename: String,
-    highest_seen_seqnum: usize,
     kw: KeyWriter,
     _marker: PhantomData<E>,
 }
@@ -90,7 +89,6 @@ impl<D: DbDir, E: LogEntry> Log<D, E> {
         Ok(Self {
             filename,
             file,
-            highest_seen_seqnum: lower_bound,
             kw: KeyWriter::new(),
             _marker: PhantomData,
         })
@@ -104,9 +102,5 @@ impl<D: DbDir, E: LogEntry> Log<D, E> {
         self.file.sync()?;
 
         Ok(())
-    }
-
-    pub fn frontier(&self) -> usize {
-        self.highest_seen_seqnum + 1
     }
 }

@@ -12,7 +12,7 @@ use crate::{
     fs::DbDir,
     log::{
         file_log::{Log, LogReader},
-        LogEntry, LogSet,
+        LogEntry,
     },
     memtable::{KVIter, Memtable, MergingIter, SeqnumIter},
     root::Root,

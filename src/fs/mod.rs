@@ -245,7 +245,17 @@ impl Event {
             }
             Event::Write(file_id, idx, contents) => {
                 write!(w, "Write({}, {}, ", file_id, idx)?;
-                write!(w, "{})", String::from_utf8_lossy(contents))?;
+                write!(
+                    w,
+                    "{})",
+                    String::from_utf8(
+                        contents
+                            .iter()
+                            .flat_map(|ch| std::ascii::escape_default(*ch))
+                            .collect::<Vec<u8>>()
+                    )
+                    .unwrap()
+                )?;
             }
             Event::Sync(file_id) => {
                 write!(w, "Sync({})", file_id)?;

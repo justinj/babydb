@@ -110,6 +110,8 @@ where
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct DiskLayout {
+    max_sst_seqnum: usize,
+    next_sst_id: usize,
     l0: Vec<String>,
     ssts: Vec<Vec<String>>,
     wals: Vec<String>,
@@ -118,14 +120,35 @@ struct DiskLayout {
 impl DiskLayout {
     fn new() -> Self {
         DiskLayout {
+            max_sst_seqnum: 0,
+            next_sst_id: 0,
             l0: Vec::new(),
             ssts: Vec::new(),
             wals: Vec::new(),
         }
     }
+
+    fn remove_sst(&mut self, fname: &str) {
+        self.l0.retain(|f| f != fname);
+        for level in self.ssts.iter_mut() {
+            level.retain(|f| f != fname);
+        }
+    }
+
+    fn add_sst(&mut self, fname: String, level: usize) {
+        if level == 0 {
+            self.l0.push(fname);
+        } else {
+            // TODO: We need to insert this in an appropriate location?
+            while self.ssts.len() < level {
+                self.ssts.push(Vec::new());
+            }
+            self.ssts[level - 1].push(fname);
+        }
+    }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Sst {
     filename: String,
 }
@@ -238,22 +261,24 @@ where
             })
             .collect();
 
-        for level in &ssts {
-            for sst in level {
-                // SST names are of the form "sst{}.sst", where {} is one greater
-                // than the largest seqnum provided by that SST.
-                // TODO: this should probably be stored in the SST itself (we can
-                // just stuff it at the end like the other stuff).
-                let largest_seqnum: usize = sst
-                    .filename
-                    .strip_prefix("sst")
-                    .and_then(|s| s.strip_suffix(".sst"))
-                    .expect("sst filename was not as expected")
-                    .parse()
-                    .unwrap();
-                next_seqnum = std::cmp::max(largest_seqnum, next_seqnum);
-            }
-        }
+        next_seqnum = std::cmp::max(next_seqnum, root.data.max_sst_seqnum + 1);
+
+        // for level in &ssts {
+        //     for sst in level {
+        //         // SST names are of the form "sst{}.sst", where {} is one greater
+        //         // than the largest seqnum provided by that SST.
+        //         // TODO: this should probably be stored in the SST itself (we can
+        //         // just stuff it at the end like the other stuff).
+        //         let largest_seqnum: usize = sst
+        //             .filename
+        //             .strip_prefix("sst")
+        //             .and_then(|s| s.strip_suffix(".sst"))
+        //             .expect("sst filename was not as expected")
+        //             .parse()
+        //             .unwrap();
+        //         next_seqnum = std::cmp::max(largest_seqnum, next_seqnum);
+        //     }
+        // }
 
         let wal = Log::new(dir.clone(), next_seqnum)?;
 
@@ -281,6 +306,78 @@ where
 
     fn apply_command_volatile(&mut self, cmd: DBCommand<K, V>) {
         self.layout.active_memtable.apply_command(cmd);
+    }
+
+    fn retrieve_sst(&self, level: usize, idx: usize) -> Sst {
+        if level == 0 {
+            self.layout.l0[idx].clone()
+        } else {
+            self.layout.ssts[level - 1][idx].clone()
+        }
+    }
+
+    fn remove_sst_from_in_memory(&mut self, filename: &String) {
+        self.layout.l0.retain(|f| &f.filename != filename);
+        for level in self.layout.ssts.iter_mut() {
+            level.retain(|f| &f.filename != filename);
+        }
+    }
+
+    fn merge(&mut self, lhs: (usize, usize), rhs: (usize, usize)) {
+        // TODO: we need to do a fixpoint calculation which determines all the
+        // SSTs which intersect above the level we are pushing into.
+        // TODO: we need an async version of this.
+        let lhs_sst = self.retrieve_sst(lhs.0, lhs.1);
+        let rhs_sst = self.retrieve_sst(rhs.0, rhs.1);
+
+        let lhs_reader = SstReader::<(K, usize), Option<V>, D>::load(
+            self.dir
+                .open(&lhs_sst.filename)
+                .expect("sst file did not exist"),
+        )
+        .unwrap();
+        let rhs_reader = SstReader::load(
+            self.dir
+                .open(&rhs_sst.filename)
+                .expect("sst file did not exist"),
+        )
+        .unwrap();
+
+        let merged = MergingIter::new([lhs_reader, rhs_reader]);
+        // TODO: we need a new name for this.
+        let new_sst_path = format!("sst{}.sst", self.root.data.next_sst_id);
+        let sst_file = self
+            .dir
+            .create(&new_sst_path)
+            .expect("sst file already existed");
+        let sst_writer = SstWriter::new(merged, sst_file);
+        sst_writer.write().unwrap();
+
+        self.remove_sst_from_in_memory(&lhs_sst.filename);
+        self.remove_sst_from_in_memory(&rhs_sst.filename);
+
+        // TODO: this is not really correct.
+        let new_level = std::cmp::max(lhs.0, rhs.0) + 1;
+        // TODO: we know this is at least 1 but that's kind of sketchy.
+        // TODO: we need to insert this at the right location.
+        while self.layout.ssts.len() < new_level {
+            self.layout.ssts.push(Vec::new());
+        }
+        self.layout.ssts[new_level - 1].push(Sst {
+            filename: new_sst_path.to_owned(),
+        });
+
+        self.root
+            .transform(move |mut layout| {
+                layout.next_sst_id += 1;
+                layout.remove_sst(&lhs_sst.filename);
+                layout.remove_sst(&rhs_sst.filename);
+                layout.add_sst(new_sst_path, new_level);
+                layout
+            })
+            .unwrap();
+
+        // TODO: now unlink the old ssts.
     }
 
     fn ratchet_visible_seqnum(&mut self, v: usize) {
@@ -381,7 +478,7 @@ where
     fn flush_memtable(&mut self) -> anyhow::Result<String> {
         let scan = self.layout.active_memtable.scan();
 
-        let sst_path = format!("sst{}.sst", self.next_seqnum);
+        let sst_path = format!("sst{}.sst", self.root.data.next_sst_id);
 
         let sst_file = self
             .dir
@@ -401,9 +498,14 @@ where
         // When we open we create a fresh WAL, so we need to add that to the root.
         let wal_name = self.wal.fname().to_owned();
         let sst_name = sst_path.clone();
+        let max_used_seqnum = self.next_seqnum - 1;
         self.root.transform(move |mut layout| {
             layout.wals = vec![wal_name];
             layout.l0.push(sst_name);
+            assert!(layout.max_sst_seqnum <= max_used_seqnum);
+            layout.max_sst_seqnum = max_used_seqnum;
+            layout.next_sst_id += 1;
+
             layout
         })?;
 
@@ -481,6 +583,18 @@ mod test {
                     .join(""),
                 "flush-memtable" => {
                     db.flush_memtable().unwrap();
+                    "ok\n".into()
+                }
+                "merge" => {
+                    let mut lines = test_case.input.lines();
+                    let (l1, i1) = lines.next().unwrap().split_once(',').unwrap();
+                    let (l2, i2) = lines.next().unwrap().split_once(',').unwrap();
+
+                    let coord1 = (l1.parse().unwrap(), i1.parse().unwrap());
+                    let coord2 = (l2.parse().unwrap(), i2.parse().unwrap());
+
+                    db.merge(coord1, coord2);
+
                     "ok\n".into()
                 }
                 "trace" => {

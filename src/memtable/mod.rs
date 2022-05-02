@@ -601,13 +601,15 @@ mod tests {
     }
 }
 
+type DBEntry<K, V> = ((K, usize), Option<V>);
+
 #[derive(Debug)]
 pub struct Memtable<K, V>
 where
     K: Ord,
 {
     prev_seqnum: usize,
-    entries: Vec<Rc<Vec<((K, usize), Option<V>)>>>,
+    entries: Vec<Rc<Vec<DBEntry<K, V>>>>,
 }
 
 impl<K, V> Memtable<K, V>
@@ -634,10 +636,7 @@ where
     }
 
     // TODO: replace this with an iterator.
-    fn merge(
-        lhs: Rc<Vec<((K, usize), Option<V>)>>,
-        rhs: Rc<Vec<((K, usize), Option<V>)>>,
-    ) -> Rc<Vec<((K, usize), Option<V>)>> {
+    fn merge(lhs: Rc<Vec<DBEntry<K, V>>>, rhs: Rc<Vec<DBEntry<K, V>>>) -> Rc<Vec<DBEntry<K, V>>> {
         let mut out = Vec::new();
         let mut lhs = (*lhs).iter();
         let mut rhs = (*rhs).iter();
@@ -703,14 +702,11 @@ where
         self.insert_val(s, k, None)
     }
 
-    pub fn scan(&self) -> MergingIter<VecIter<(K, usize), Option<V>>, (K, usize), Option<V>> {
+    pub fn scan(&self) -> impl KVIter<(K, usize), Option<V>> {
         MergingIter::new(self.entries.iter().map(|e| VecIter::new(e.clone())))
     }
 
-    pub fn read_at(
-        &self,
-        seqnum: usize,
-    ) -> SeqnumIter<MergingIter<VecIter<(K, usize), Option<V>>, (K, usize), Option<V>>, K, V> {
+    pub fn read_at(&self, seqnum: usize) -> impl KVIter<K, V> {
         SeqnumIter::new(
             seqnum,
             MergingIter::new(self.entries.iter().map(|e| VecIter::new(e.clone()))),

@@ -238,6 +238,7 @@ pub enum Event {
 }
 
 impl Event {
+    #[allow(unused)]
     pub fn write_abbrev<W: std::fmt::Write>(&self, w: &mut W) -> std::fmt::Result {
         match self {
             Event::Create(name, file_id) => {
@@ -297,10 +298,12 @@ impl MockFs {
         self.events.push(e);
     }
 
+    #[allow(unused)]
     pub fn iter_events(&self) -> impl Iterator<Item = &Event> {
         self.events.iter()
     }
 
+    #[allow(unused)]
     pub fn take_events(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.events)
     }

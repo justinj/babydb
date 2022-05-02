@@ -22,6 +22,8 @@ use crate::{
 use self::level_iter::LevelIter;
 
 mod level_iter;
+#[cfg(test)]
+mod trace_test;
 
 struct DbIterator<K, V, I>
 where
@@ -263,23 +265,6 @@ where
 
         next_seqnum = std::cmp::max(next_seqnum, root.data.max_sst_seqnum + 1);
 
-        // for level in &ssts {
-        //     for sst in level {
-        //         // SST names are of the form "sst{}.sst", where {} is one greater
-        //         // than the largest seqnum provided by that SST.
-        //         // TODO: this should probably be stored in the SST itself (we can
-        //         // just stuff it at the end like the other stuff).
-        //         let largest_seqnum: usize = sst
-        //             .filename
-        //             .strip_prefix("sst")
-        //             .and_then(|s| s.strip_suffix(".sst"))
-        //             .expect("sst filename was not as expected")
-        //             .parse()
-        //             .unwrap();
-        //         next_seqnum = std::cmp::max(largest_seqnum, next_seqnum);
-        //     }
-        // }
-
         let wal = Log::new(dir.clone(), next_seqnum)?;
 
         // When we open we create a fresh WAL, so we need to add that to the root.
@@ -323,27 +308,25 @@ where
         }
     }
 
-    fn merge(&mut self, lhs: (usize, usize), rhs: (usize, usize)) {
+    fn merge(&mut self, targets: &[(usize, usize)]) {
         // TODO: we need to do a fixpoint calculation which determines all the
         // SSTs which intersect above the level we are pushing into.
         // TODO: we need an async version of this.
-        let lhs_sst = self.retrieve_sst(lhs.0, lhs.1);
-        let rhs_sst = self.retrieve_sst(rhs.0, rhs.1);
+        let ssts = targets
+            .iter()
+            .map(|(level, idx)| self.retrieve_sst(*level, *idx))
+            .collect::<Vec<_>>();
 
-        let lhs_reader = SstReader::<(K, usize), Option<V>, D>::load(
-            self.dir
-                .open(&lhs_sst.filename)
-                .expect("sst file did not exist"),
-        )
-        .unwrap();
-        let rhs_reader = SstReader::load(
-            self.dir
-                .open(&rhs_sst.filename)
-                .expect("sst file did not exist"),
-        )
-        .unwrap();
+        let readers = ssts.iter().map(|sst| {
+            SstReader::<(K, usize), Option<V>, D>::load(
+                self.dir
+                    .open(&sst.filename)
+                    .expect("sst file did not exist"),
+            )
+            .unwrap()
+        });
 
-        let merged = MergingIter::new([lhs_reader, rhs_reader]);
+        let merged = MergingIter::new(readers);
         // TODO: we need a new name for this.
         let new_sst_path = format!("sst{}.sst", self.root.data.next_sst_id);
         let sst_file = self
@@ -353,11 +336,12 @@ where
         let sst_writer = SstWriter::new(merged, sst_file);
         sst_writer.write().unwrap();
 
-        self.remove_sst_from_in_memory(&lhs_sst.filename);
-        self.remove_sst_from_in_memory(&rhs_sst.filename);
+        for sst in &ssts {
+            self.remove_sst_from_in_memory(&sst.filename);
+        }
 
         // TODO: this is not really correct.
-        let new_level = std::cmp::max(lhs.0, rhs.0) + 1;
+        let new_level = targets.iter().map(|(level, _)| *level).max().unwrap() + 1;
         // TODO: we know this is at least 1 but that's kind of sketchy.
         // TODO: we need to insert this at the right location.
         while self.layout.ssts.len() < new_level {
@@ -370,8 +354,9 @@ where
         self.root
             .transform(move |mut layout| {
                 layout.next_sst_id += 1;
-                layout.remove_sst(&lhs_sst.filename);
-                layout.remove_sst(&rhs_sst.filename);
+                for sst in ssts {
+                    layout.remove_sst(&sst.filename);
+                }
                 layout.add_sst(new_sst_path, new_level);
                 layout
             })
@@ -444,7 +429,7 @@ where
         // concatenated.
         let mut level_readers = Vec::new();
         for sst in &self.layout.l0 {
-            level_readers.push(LevelIter::new(SstReader::load(
+            level_readers.push(LevelIter::new(SstReader::<(K, usize), Option<V>, D>::load(
                 self.dir
                     .open(&sst.filename)
                     .expect("sst file did not exist"),
@@ -463,8 +448,7 @@ where
             level_readers.push(LevelIter::new(readers))
         }
 
-        let sst_merge: MergingIter<LevelIter<_, _, SstReader<(K, usize), Option<V>, D>>, _, _> =
-            MergingIter::new(level_readers);
+        let sst_merge = MergingIter::new(level_readers);
 
         let lhs: Box<dyn KVIter<(K, usize), Option<V>>> = Box::new(sst_merge);
         let merged = MergingIter::new([Box::new(tab), lhs]);
@@ -553,82 +537,6 @@ mod test {
         let iter_data: Vec<_> = map.into_iter().collect();
 
         assert_eq!(db_data, iter_data);
-    }
-
-    #[test]
-    fn test_db_trace() {
-        datadriven::walk("src/db/testdata/", |f| {
-            let dir = MockDir::new();
-            let mut db: Db<_, String, String> = Db::new(dir.clone()).unwrap();
-            f.run(|test_case| match test_case.directive.as_str() {
-                "insert" => {
-                    for line in test_case.input.lines() {
-                        let eq_idx = line.find('=').unwrap();
-                        let key = line[0..eq_idx].to_owned();
-                        let val = line[eq_idx + 1..].to_owned();
-                        db.insert(key, val);
-                    }
-                    "ok\n".into()
-                }
-                "get" => {
-                    let key = test_case.input.trim();
-                    let iter = db.get(&key.to_owned());
-
-                    format!("{:?}\n", iter)
-                }
-                "scan" => db
-                    .scan()
-                    .map(|x| format!("{:?}\n", x))
-                    .collect::<Vec<_>>()
-                    .join(""),
-                "flush-memtable" => {
-                    db.flush_memtable().unwrap();
-                    "ok\n".into()
-                }
-                "merge" => {
-                    let mut lines = test_case.input.lines();
-                    let (l1, i1) = lines.next().unwrap().split_once(',').unwrap();
-                    let (l2, i2) = lines.next().unwrap().split_once(',').unwrap();
-
-                    let coord1 = (l1.parse().unwrap(), i1.parse().unwrap());
-                    let coord2 = (l2.parse().unwrap(), i2.parse().unwrap());
-
-                    db.merge(coord1, coord2);
-
-                    "ok\n".into()
-                }
-                "trace" => {
-                    let mut result = String::new();
-                    for event in (*dir.fs).borrow_mut().take_events() {
-                        event.write_abbrev(&mut result).unwrap();
-                        result.push('\n');
-                    }
-                    if test_case.args.contains_key("squelch") {
-                        "ok\n".into()
-                    } else {
-                        result
-                    }
-                }
-                "dump" => {
-                    let mut out = String::new();
-                    for line in test_case.input.lines() {
-                        match line.trim() {
-                            "root" => writeln!(&mut out, "{:#?}", db.root.data).unwrap(),
-                            "layout" => writeln!(&mut out, "{:#?}", db.layout).unwrap(),
-                            _ => writeln!(&mut out, "can't dump {:?}", line.trim()).unwrap(),
-                        }
-                    }
-                    out
-                }
-                "reload" => {
-                    db = Db::new(dir.clone()).unwrap();
-                    "ok\n".into()
-                }
-                _ => {
-                    panic!("unhandled");
-                }
-            })
-        })
     }
 
     #[test]

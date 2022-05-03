@@ -185,12 +185,12 @@ where
 }
 
 #[derive(Debug)]
-struct SstMeta<K>
+pub struct SstMeta<K>
 where
     K: Decode,
 {
-    hi: K,
-    lo: K,
+    pub hi: K,
+    pub lo: K,
 }
 
 #[derive(Debug)]
@@ -205,7 +205,7 @@ where
     index_block: Block<K, (u32, u32)>,
     current_block: Block<K, V>,
     state: ReaderState,
-    sst_meta: SstMeta<K>,
+    pub sst_meta: SstMeta<K>,
     _marker: PhantomData<(K, V)>,
 }
 

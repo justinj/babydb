@@ -153,18 +153,48 @@ impl DiskLayout {
 }
 
 #[derive(Clone, Debug)]
-struct Sst {
+struct Sst<K, V>
+where
+    K: Ord + Default + Clone + std::fmt::Debug + Encode + Decode,
+    V: Default + Clone + std::fmt::Debug + Encode + Decode,
+{
     filename: String,
+    min_key: (K, usize),
+    max_key: (K, usize),
+    // TODO: do we need this?
+    _marker: PhantomData<V>,
+}
+
+impl<K, V> Sst<K, V>
+where
+    K: Ord + Default + Clone + std::fmt::Debug + Encode + Decode,
+    V: Default + Clone + std::fmt::Debug + Encode + Decode,
+{
+    fn new<D: DbDir>(d: &mut D, fname: String) -> Self {
+        // TODO: verify we don't do any more work than checking the metadata for this SST.
+        let reader = SstReader::<(K, usize), Option<V>, D>::load(
+            d.open(&fname).expect("sst file did not exist"),
+        )
+        .unwrap();
+
+        Sst {
+            filename: fname,
+            min_key: reader.sst_meta.lo,
+            max_key: reader.sst_meta.hi,
+            _marker: PhantomData,
+        }
+    }
 }
 
 #[derive(Debug)]
 struct Layout<K, V>
 where
-    K: Ord,
+    K: Ord + Default + Clone + std::fmt::Debug + Encode + Decode,
+    V: Default + Clone + std::fmt::Debug + Encode + Decode,
 {
     active_memtable: Memtable<K, V>,
-    l0: Vec<Sst>,
-    ssts: Vec<Vec<Sst>>,
+    l0: Vec<Sst<K, V>>,
+    ssts: Vec<Vec<Sst<K, V>>>,
 }
 
 impl<K, V> Layout<K, V>
@@ -172,7 +202,7 @@ where
     K: Ord + Default + Clone + std::fmt::Debug + Encode + Decode,
     V: Default + Clone + std::fmt::Debug + Encode + Decode,
 {
-    fn new(memtable: Memtable<K, V>, l0: Vec<Sst>, ssts: Vec<Vec<Sst>>) -> Self {
+    fn new(memtable: Memtable<K, V>, l0: Vec<Sst<K, V>>, ssts: Vec<Vec<Sst<K, V>>>) -> Self {
         Layout {
             active_memtable: memtable,
             l0,
@@ -188,8 +218,8 @@ where
 struct Db<D, K, V>
 where
     D: DbDir,
-    K: std::fmt::Debug + Ord + Clone + Encode + Decode,
-    V: std::fmt::Debug + Clone + Encode + Decode,
+    K: std::fmt::Debug + Ord + Clone + Encode + Decode + Default,
+    V: std::fmt::Debug + Clone + Encode + Decode + Default,
 {
     root: Root<DiskLayout, D>,
     layout: Layout<K, V>,
@@ -247,20 +277,16 @@ where
             .data
             .l0
             .iter()
-            .map(|filename| Sst {
-                filename: filename.clone(),
-            })
+            .map(|filename| Sst::new(&mut dir, filename.clone()))
             .collect();
-        let ssts: Vec<Vec<Sst>> = root
+        let ssts: Vec<Vec<Sst<K, V>>> = root
             .data
             .ssts
             .iter()
             .map(|level| {
                 level
                     .iter()
-                    .map(|filename| Sst {
-                        filename: filename.clone(),
-                    })
+                    .map(|filename| Sst::new(&mut dir, filename.clone()))
                     .collect()
             })
             .collect();
@@ -295,7 +321,7 @@ where
         self.layout.active_memtable.apply_command(cmd);
     }
 
-    fn retrieve_sst(&self, level: usize, idx: usize) -> Sst {
+    fn retrieve_sst(&self, level: usize, idx: usize) -> Sst<K, V> {
         if level == 0 {
             self.layout.l0[idx].clone()
         } else {
@@ -349,9 +375,7 @@ where
         while self.layout.ssts.len() < new_level {
             self.layout.ssts.push(Vec::new());
         }
-        self.layout.ssts[new_level - 1].push(Sst {
-            filename: new_sst_path.to_owned(),
-        });
+        self.layout.ssts[new_level - 1].push(Sst::new(&mut self.dir, new_sst_path.to_owned()));
 
         self.root
             .transform(move |mut layout| {
@@ -488,9 +512,9 @@ where
 
         self.layout.flush_memtable();
         // Add it to L0.
-        self.layout.l0.push(Sst {
-            filename: sst_path.clone(),
-        });
+        self.layout
+            .l0
+            .push(Sst::new(&mut self.dir, sst_path.clone()));
 
         // TODO: include the lower bound?
         self.wal = Log::new(self.dir.clone(), self.next_seqnum)?;

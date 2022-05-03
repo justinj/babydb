@@ -30,9 +30,27 @@ Layout {
     l0: [
         Sst {
             filename: "sst0.sst",
+            min_key: (
+                "bar",
+                3,
+            ),
+            max_key: (
+                "foo",
+                2,
+            ),
+            _marker: PhantomData,
         },
         Sst {
             filename: "sst1.sst",
+            min_key: (
+                "bar2",
+                5,
+            ),
+            max_key: (
+                "foo2",
+                4,
+            ),
+            _marker: PhantomData,
         },
     ],
     ssts: [],
@@ -70,6 +88,15 @@ Layout {
         [
             Sst {
                 filename: "sst2.sst",
+                min_key: (
+                    "bar",
+                    3,
+                ),
+                max_key: (
+                    "foo2",
+                    4,
+                ),
+                _marker: PhantomData,
             },
         ],
     ],
@@ -113,6 +140,15 @@ Layout {
         [
             Sst {
                 filename: "sst2.sst",
+                min_key: (
+                    "bar",
+                    3,
+                ),
+                max_key: (
+                    "foo2",
+                    4,
+                ),
+                _marker: PhantomData,
             },
         ],
     ],

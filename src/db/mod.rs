@@ -23,6 +23,8 @@ use self::level_iter::LevelIter;
 
 mod level_iter;
 #[cfg(test)]
+mod metamorphic_test;
+#[cfg(test)]
 mod trace_test;
 
 struct DbIterator<K, V, I>

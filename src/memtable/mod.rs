@@ -471,7 +471,7 @@ where
 
     fn peek_prev(&mut self) -> Option<(&K, &V)> {
         let highest = self.highest()?;
-        self.iters[highest].peek()
+        self.iters[highest].peek_prev()
     }
 
     fn prev(&mut self) -> Option<(&K, &V)> {

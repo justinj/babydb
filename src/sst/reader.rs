@@ -87,6 +87,8 @@ struct Block<K, V> {
     idx: usize,
 }
 
+// TODO actual description of what all these things are.
+
 impl<K, V> Block<K, V>
 where
     K: Decode + Ord + std::fmt::Debug,
@@ -183,6 +185,15 @@ where
 }
 
 #[derive(Debug)]
+struct SstMeta<K>
+where
+    K: Decode,
+{
+    hi: K,
+    lo: K,
+}
+
+#[derive(Debug)]
 pub struct SstReader<K, V, D>
 where
     K: Decode + Default,
@@ -194,6 +205,7 @@ where
     index_block: Block<K, (u32, u32)>,
     current_block: Block<K, V>,
     state: ReaderState,
+    sst_meta: SstMeta<K>,
     _marker: PhantomData<(K, V)>,
 }
 
@@ -205,7 +217,7 @@ enum ReaderState {
 
 impl<K, V, D> KVIter<K, V> for SstReader<K, V, D>
 where
-    K: Ord + Decode + Default + std::fmt::Debug,
+    K: Ord + Decode + Default + Clone + std::fmt::Debug,
     V: Decode + Default + std::fmt::Debug,
     D: DbDir,
 {
@@ -345,7 +357,7 @@ where
 
 impl<K, V, D> SstReader<K, V, D>
 where
-    K: Decode + Default + Ord + std::fmt::Debug,
+    K: Decode + Default + Ord + Clone + std::fmt::Debug,
     V: Decode + Default + std::fmt::Debug,
     D: DbDir,
 {
@@ -396,18 +408,40 @@ where
     }
 
     pub fn load(mut file: D::DbFile) -> anyhow::Result<Self> {
-        file.seek(SeekFrom::End(-8))?;
+        // First, read the length of the metadata.
+        file.seek(SeekFrom::End(-4))?;
+        let mut buf = [0_u8; 4];
+        file.read_exact(&mut buf)?;
+        let meta_len: i64 = u32::from_le_bytes(buf).into();
+
+        file.seek(SeekFrom::End(-4 - meta_len))?;
+
+        // TODO: write a length-prefixed helper.
+
+        // TODO: can we derive 12 here instead of hardcoding it?
+        let mut bounds_info = (0..(meta_len - 8)).map(|_| 0u8).collect::<Vec<_>>();
+        file.read_exact(&mut bounds_info)?;
+
+        let mut reader = KeyReader::new();
+        reader.load(&bounds_info);
+
+        let mut b = Block::<K, ()>::new();
+        let len = bounds_info.len().try_into()?;
+        b.load(&mut Cursor::new(bounds_info), len)?;
+
+        let min_key = (*b.next().unwrap().0).clone();
+        let max_key = (*b.next().unwrap().0).clone();
+
         let mut buf = [0_u8; 4];
         file.read_exact(&mut buf)?;
         // TODO: do we need this?
         let _data_len = u32::from_le_bytes(buf);
 
-        file.seek(SeekFrom::End(-4))?;
         file.read_exact(&mut buf)?;
         let index_len = u32::from_le_bytes(buf);
 
         // Load the index block into memory.
-        file.seek(SeekFrom::End(-8 - (index_len as i64)))?;
+        file.seek(SeekFrom::End(-4 - (index_len as i64) - meta_len))?;
         let mut index_data: Vec<_> = (0..index_len).map(|_| 0).collect();
         file.read_exact(&mut index_data)?;
         let mut index_block = Block::new();
@@ -421,6 +455,10 @@ where
             current_block: Block::new(),
             index_block,
             state: ReaderState::RightOfLoadedBlock,
+            sst_meta: SstMeta {
+                lo: min_key,
+                hi: max_key,
+            },
             _marker: PhantomData,
         })
     }

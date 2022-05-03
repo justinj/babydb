@@ -425,17 +425,22 @@ where
         K: 'static,
         V: 'static,
     {
+        // TODO: get rid of the unwraps in here.
         let tab = self.layout.active_memtable.scan();
 
         // Every SST in L0 is read independently, but the lower-level ones get
         // concatenated.
         let mut level_readers = Vec::new();
         for sst in &self.layout.l0 {
-            level_readers.push(LevelIter::new(SstReader::<(K, usize), Option<V>, D>::load(
-                self.dir
-                    .open(&sst.filename)
-                    .expect("sst file did not exist"),
-            )))
+            // TODO: kind of goofy this is a LevelIter that always has one thing in it.
+            level_readers.push(LevelIter::new([
+                SstReader::<(K, usize), Option<V>, D>::load(
+                    self.dir
+                        .open(&sst.filename)
+                        .expect("sst file did not exist"),
+                )
+                .unwrap(),
+            ]))
         }
 
         for level in &self.layout.ssts {
@@ -447,7 +452,9 @@ where
                 )
                 .unwrap()
             });
-            level_readers.push(LevelIter::new(readers))
+            if readers.len() > 0 {
+                level_readers.push(LevelIter::new(readers))
+            }
         }
 
         let sst_merge = MergingIter::new(level_readers);
@@ -461,8 +468,14 @@ where
         }
     }
 
-    fn flush_memtable(&mut self) -> anyhow::Result<String> {
-        let scan = self.layout.active_memtable.scan();
+    fn flush_memtable(&mut self) -> anyhow::Result<()> {
+        let mut scan = self.layout.active_memtable.scan();
+        if scan.peek().is_none() {
+            // If the memtable is empty, don't do anything. It's simpler if we
+            // can assume that SSTs are non-empty (since they need to store
+            // their min and max keys).
+            return Ok(());
+        }
 
         let sst_path = format!("sst{}.sst", self.root.data.next_sst_id);
 
@@ -495,7 +508,7 @@ where
             layout
         })?;
 
-        Ok(sst_path)
+        Ok(())
     }
 }
 

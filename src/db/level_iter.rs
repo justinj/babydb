@@ -30,6 +30,8 @@ where
             iters.push(v);
         }
 
+        assert!(!iters.is_empty());
+
         LevelIter {
             iters,
             index,

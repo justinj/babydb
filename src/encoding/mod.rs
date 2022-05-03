@@ -126,6 +126,16 @@ impl<T: Encode> Encode for Vec<T> {
     }
 }
 
+impl Encode for () {
+    fn write_bytes(&self, _: &mut KeyWriter) {}
+}
+
+impl Decode for () {
+    fn decode(_: &mut KeyReader) -> anyhow::Result<Self> {
+        Ok(())
+    }
+}
+
 impl Encode for String {
     fn write_bytes(&self, kw: &mut KeyWriter) {
         kw.write(self.as_bytes())

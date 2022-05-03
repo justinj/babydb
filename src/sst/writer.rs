@@ -3,6 +3,8 @@ use std::{
     marker::PhantomData,
 };
 
+use anyhow::bail;
+
 use crate::{
     encoding::{Encode, KeyWriter},
     fs::DbFile,
@@ -45,6 +47,7 @@ where
 
         let n = std::cmp::min(self.prev_val.len(), buf.len());
         let mut shared_prefix_len = n;
+        // TODO: why can we not just slice here?
         for (i, item) in buf.iter().enumerate().take(n) {
             if self.prev_val[i] != *item {
                 shared_prefix_len = i;
@@ -113,6 +116,12 @@ where
         let mut bytes_written = 0;
         let mut block_buffer = Vec::new();
 
+        let min_key = if let Some((k, _)) = self.it.peek() {
+            k.clone()
+        } else {
+            bail!("will only write non-empty SST")
+        };
+
         while let Some((header_key, _)) = self.it.peek() {
             // TODO: is this clone necessary?
             let k = (*header_key).clone();
@@ -128,14 +137,36 @@ where
             block_buffer.clear();
         }
 
+        let max_key = if let Some((k, _)) = self.it.peek_prev() {
+            k.clone()
+        } else {
+            unreachable!()
+        };
+
         let data_length = bytes_written;
 
         // Write the index block.
         self.file.write(&index)?;
+
+        // Write the metadata.
+        let mut metadata_len = 0;
+
+        // Write the bounds keys.
+        let mut data = Vec::new();
+        let mut writer = Writer::new(Cursor::new(&mut data));
+        writer.write(&min_key)?;
+        writer.write(&max_key)?;
+        self.file.write(&data)?;
+        metadata_len += data.len();
+
         // Write the length of the data block.
         self.file.write(&(data_length as u32).to_le_bytes())?;
+        metadata_len += 4;
         // Write the length of the index block.
         self.file.write(&(index.len() as u32).to_le_bytes())?;
+        metadata_len += 4;
+        // Write the length of the metadata.
+        self.file.write(&(metadata_len as u32).to_le_bytes())?;
 
         self.file.sync()?;
 

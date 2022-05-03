@@ -161,6 +161,7 @@ where
     filename: String,
     min_key: (K, usize),
     max_key: (K, usize),
+    num_bytes: usize,
     // TODO: do we need this?
     _marker: PhantomData<V>,
 }
@@ -179,8 +180,9 @@ where
 
         Sst {
             filename: fname,
-            min_key: reader.sst_meta.lo,
-            max_key: reader.sst_meta.hi,
+            min_key: reader.sst_meta.min_key,
+            max_key: reader.sst_meta.max_key,
+            num_bytes: reader.sst_meta.num_bytes,
             _marker: PhantomData,
         }
     }

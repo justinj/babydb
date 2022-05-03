@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     encoding::{Decode, KeyReader},
-    fs::DbDir,
+    fs::{DbDir, DbFile},
     memtable::KVIter,
 };
 
@@ -189,8 +189,9 @@ pub struct SstMeta<K>
 where
     K: Decode,
 {
-    pub hi: K,
-    pub lo: K,
+    pub min_key: K,
+    pub max_key: K,
+    pub num_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -450,14 +451,17 @@ where
 
         file.seek(SeekFrom::Start(0))?;
 
+        let num_bytes = file.len();
+
         Ok(SstReader {
             file,
             current_block: Block::new(),
             index_block,
             state: ReaderState::RightOfLoadedBlock,
             sst_meta: SstMeta {
-                lo: min_key,
-                hi: max_key,
+                min_key,
+                max_key,
+                num_bytes,
             },
             _marker: PhantomData,
         })

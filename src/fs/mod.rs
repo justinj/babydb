@@ -10,6 +10,7 @@ pub trait DbFile: std::fmt::Debug + Read + Seek {
     fn write(&mut self, buf: &[u8]) -> io::Result<()>;
     fn sync(&mut self) -> io::Result<()>;
     fn read_all(&self) -> Vec<u8>;
+    fn len(&self) -> usize;
 }
 
 pub trait DbDir: Clone {
@@ -114,6 +115,14 @@ impl DbFile for MockFile {
     fn read_all(&self) -> Vec<u8> {
         (*self.fs).borrow_mut().data[self.file_id].unsynced.clone()
     }
+
+    fn len(&self) -> usize {
+        (*self.fs).borrow().stat(self.file_id).len
+    }
+}
+
+struct FileMeta {
+    len: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -306,6 +315,12 @@ impl MockFs {
     #[allow(unused)]
     pub fn take_events(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.events)
+    }
+
+    fn stat(&self, file: FileId) -> FileMeta {
+        FileMeta {
+            len: self.data[file].unsynced.len(),
+        }
     }
 }
 

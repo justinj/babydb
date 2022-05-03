@@ -194,9 +194,49 @@ flush-memtable
 ----
 ok
 
-scan
+dump
+layout
 ----
-("bar", "baz")
-("bar2", "baz2")
-("foo", "bar3")
-("foo2", "bar2")
+Layout {
+    active_memtable: Memtable {
+        prev_seqnum: 0,
+        entries: [],
+    },
+    l0: [
+        Sst {
+            filename: "sst3.sst",
+            min_key: (
+                "foo",
+                6,
+            ),
+            max_key: (
+                "foo",
+                6,
+            ),
+            num_bytes: 132,
+            _marker: PhantomData,
+        },
+    ],
+    ssts: [
+        [
+            Sst {
+                filename: "sst2.sst",
+                min_key: (
+                    "bar",
+                    3,
+                ),
+                max_key: (
+                    "foo2",
+                    4,
+                ),
+                num_bytes: 304,
+                _marker: PhantomData,
+            },
+        ],
+    ],
+}
+
+merge
+0,0
+----
+ok

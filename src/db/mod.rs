@@ -323,11 +323,19 @@ where
         self.layout.active_memtable.apply_command(cmd);
     }
 
-    fn retrieve_sst(&self, level: usize, idx: usize) -> Sst<K, V> {
+    fn retrieve_sst(&self, level: usize, idx: usize) -> anyhow::Result<Sst<K, V>> {
         if level == 0 {
-            self.layout.l0[idx].clone()
+            if idx >= self.layout.l0.len() {
+                bail!("invalid sst")
+            }
+            Ok(self.layout.l0[idx].clone())
+        } else if level <= self.layout.ssts.len() {
+            if idx >= self.layout.ssts[level - 1].len() {
+                bail!("invalid sst")
+            }
+            Ok(self.layout.ssts[level - 1][idx].clone())
         } else {
-            self.layout.ssts[level - 1][idx].clone()
+            bail!("invalid sst")
         }
     }
 
@@ -338,14 +346,14 @@ where
         }
     }
 
-    fn merge(&mut self, targets: &[(usize, usize)]) {
+    fn merge(&mut self, targets: &[(usize, usize)]) -> anyhow::Result<()> {
         // TODO: we need to do a fixpoint calculation which determines all the
         // SSTs which intersect above the level we are pushing into.
         // TODO: we need an async version of this.
         let ssts = targets
             .iter()
             .map(|(level, idx)| self.retrieve_sst(*level, *idx))
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
 
         let readers = ssts.iter().map(|sst| {
             SstReader::<(K, usize), Option<V>, D>::load(
@@ -391,6 +399,7 @@ where
             .unwrap();
 
         // TODO: now unlink the old ssts.
+        Ok(())
     }
 
     fn ratchet_visible_seqnum(&mut self, v: usize) {

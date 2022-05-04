@@ -490,7 +490,7 @@ where
                     )
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            if readers.len() > 0 {
+            if !readers.is_empty() {
                 level_readers.push(LevelIter::new(readers))
             }
         }

@@ -98,7 +98,7 @@ impl TestCase {
                 }
                 Op::Merge(target) => {
                     // It's ok if this doesn't do anything.
-                    let _ = db.merge(&[target]);
+                    let _ = db.merge(vec![target], target.0 + 1);
                 }
             }
         }
@@ -127,79 +127,81 @@ impl Iterator for TestCase {
 
 #[test]
 fn metamorphic_test() {
-    let mut rng = rand::thread_rng();
-    let inputs = (0..50)
-        .map(|_| match rng.gen_range(0..3) {
-            0 => Op::Insert(
-                format!("key{}", rng.gen_range(0..10)),
-                format!("value{}", rng.gen_range(0..10)),
-            ),
-            1 => Op::Delete(format!("key{}", rng.gen_range(0..10))),
-            2 => Op::Get(format!("key{}", rng.gen_range(0..10))),
-            _ => unreachable!(),
-        })
-        .collect::<Vec<_>>();
+    for i in 0..1000 {
+        let mut rng = rand::thread_rng();
+        let inputs = (0..50)
+            .map(|_| match rng.gen_range(0..3) {
+                0 => Op::Insert(
+                    format!("key{}", rng.gen_range(0..10)),
+                    format!("value{}", rng.gen_range(0..10)),
+                ),
+                1 => Op::Delete(format!("key{}", rng.gen_range(0..10))),
+                2 => Op::Get(format!("key{}", rng.gen_range(0..10))),
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>();
 
-    let mut test_case = TestCase::new(inputs, Vec::new());
+        let mut test_case = TestCase::new(inputs, Vec::new());
 
-    for _ in 0..100 {
-        let idx = rng.gen_range(0..test_case.logical_len());
-        match rng.gen_range(0..3) {
-            0 => test_case.add_physical_op(idx, Op::FlushMemtable),
-            1 => test_case.add_physical_op(idx, Op::Reload),
-            2 => test_case
-                .add_physical_op(idx, Op::Merge((rng.gen_range(0..3), rng.gen_range(0..3)))),
-            _ => unreachable!(),
+        for _ in 0..100 {
+            let idx = rng.gen_range(0..test_case.logical_len());
+            match rng.gen_range(0..3) {
+                0 => test_case.add_physical_op(idx, Op::FlushMemtable),
+                1 => test_case.add_physical_op(idx, Op::Reload),
+                2 => test_case
+                    .add_physical_op(idx, Op::Merge((rng.gen_range(0..3), rng.gen_range(0..3)))),
+                _ => unreachable!(),
+            }
         }
-    }
 
-    test_case.sort();
+        test_case.sort();
 
-    let expected_output = test_case.run_logical();
-    let new_output = test_case.run();
+        let expected_output = test_case.run_logical();
+        let new_output = test_case.run();
 
-    if new_output != expected_output {
-        let reduced_case = loop {
-            let mut better_case = None;
+        if new_output != expected_output {
+            let reduced_case = loop {
+                let mut better_case = None;
 
-            for idx in 0..test_case.logical_len() {
-                let mut reduced = test_case.clone();
-                reduced.apply_reduction(Reduction::DeleteLogicalOp(idx));
+                for idx in 0..test_case.logical_len() {
+                    let mut reduced = test_case.clone();
+                    reduced.apply_reduction(Reduction::DeleteLogicalOp(idx));
 
-                let a_output = reduced.run();
-                let b_output = reduced.run_logical();
+                    let a_output = reduced.run();
+                    let b_output = reduced.run_logical();
 
-                if a_output != b_output {
-                    better_case = Some(reduced);
-                    break;
+                    if a_output != b_output {
+                        better_case = Some(reduced);
+                        break;
+                    }
                 }
-            }
-            if let Some(tc) = better_case {
-                test_case = tc;
-                continue;
-            }
-
-            for idx in 0..test_case.physical_len() {
-                let mut reduced = test_case.clone();
-                reduced.apply_reduction(Reduction::DeletePhysicalOp(idx));
-
-                let a_output = reduced.run();
-                let b_output = reduced.run_logical();
-
-                if a_output != b_output {
-                    better_case = Some(reduced);
-                    break;
+                if let Some(tc) = better_case {
+                    test_case = tc;
+                    continue;
                 }
-            }
-            if let Some(tc) = better_case {
-                test_case = tc;
-                continue;
-            }
 
-            break test_case;
-        };
+                for idx in 0..test_case.physical_len() {
+                    let mut reduced = test_case.clone();
+                    reduced.apply_reduction(Reduction::DeletePhysicalOp(idx));
 
-        println!("reduced case: {:#?}", reduced_case);
-        panic!("they differed!")
+                    let a_output = reduced.run();
+                    let b_output = reduced.run_logical();
+
+                    if a_output != b_output {
+                        better_case = Some(reduced);
+                        break;
+                    }
+                }
+                if let Some(tc) = better_case {
+                    test_case = tc;
+                    continue;
+                }
+
+                break test_case;
+            };
+
+            println!("reduced case: {:#?}", reduced_case);
+            panic!("they differed!")
+        }
     }
 }

@@ -18,6 +18,13 @@ fn test_db_trace() {
                 }
                 "ok\n".into()
             }
+            "delete" => {
+                for line in test_case.input.lines() {
+                    let key = line.to_owned();
+                    db.delete(key);
+                }
+                "ok\n".into()
+            }
             "get" => {
                 let key = test_case.input.trim();
                 let iter = db.get(&key.to_owned()).unwrap();
@@ -42,7 +49,9 @@ fn test_db_trace() {
                     .map(|(l1, i1)| (l1.parse().unwrap(), i1.parse().unwrap()))
                     .collect::<Vec<_>>();
 
-                match db.merge(&targets) {
+                let target_level = targets.iter().max_by_key(|(level, _)| level).unwrap().0 + 1;
+
+                match db.merge(targets.to_vec(), target_level) {
                     Ok(()) => "ok\n".into(),
                     Err(err) => format!("{}", err),
                 }

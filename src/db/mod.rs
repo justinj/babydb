@@ -139,7 +139,7 @@ impl DiskLayout {
         }
     }
 
-    fn add_sst(&mut self, fname: String, level: usize) {
+    fn add_sst(&mut self, fname: String, level: usize, index: usize) {
         if level == 0 {
             self.l0.push(fname);
         } else {
@@ -147,7 +147,7 @@ impl DiskLayout {
             while self.ssts.len() < level {
                 self.ssts.push(Vec::new());
             }
-            self.ssts[level - 1].push(fname);
+            self.ssts[level - 1].insert(index, fname);
         }
     }
 }
@@ -346,9 +346,17 @@ where
         }
     }
 
-    fn merge(&mut self, targets: &[(usize, usize)]) -> anyhow::Result<()> {
-        // TODO: we need to do a fixpoint calculation which determines all the
-        // SSTs which intersect above the level we are pushing into.
+    fn merge(&mut self, targets: Vec<(usize, usize)>, target_level: usize) -> anyhow::Result<()> {
+        let max_level = targets.iter().map(|(level, _)| *level).max().unwrap_or(0);
+
+        if target_level < max_level {
+            bail!("merging is not allowed to hoist any SSTs up a level");
+        }
+
+        if targets.is_empty() {
+            return Ok(());
+        }
+
         // TODO: we need an async version of this.
         let ssts = targets
             .iter()
@@ -366,35 +374,51 @@ where
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
-        let merged = MergingIter::new(readers);
-        // TODO: we need a new name for this.
-        let new_sst_path = format!("sst{}.sst", self.root.data.next_sst_id);
-        let sst_file = self
-            .dir
-            .create(&new_sst_path)
-            .expect("sst file already existed");
-        let sst_writer = SstWriter::new(merged, sst_file);
-        sst_writer.write()?;
+        let mut merged = MergingIter::new(readers);
+
+        // Don't write out an empty SST.
+        let new_sst_path = if merged.peek().is_none() {
+            None
+        } else {
+            let new_sst_path = format!("sst{}.sst", self.root.data.next_sst_id);
+            let sst_file = self
+                .dir
+                .create(&new_sst_path)
+                .unwrap_or_else(|| panic!("sst file {} already existed", new_sst_path));
+            let sst_writer = SstWriter::new(merged, sst_file);
+            sst_writer.write()?;
+            Some(new_sst_path)
+        };
+
+        // Reshape the in-memory and on-disk layouts.
 
         for sst in &ssts {
             self.remove_sst_from_in_memory(&sst.filename);
         }
 
-        // TODO: this is not really correct.
-        let new_level = targets.iter().map(|(level, _)| *level).max().unwrap() + 1;
-        // TODO: we know this is at least 1 but that's kind of sketchy.
-        // TODO: we need to insert this at the right location.
-        while self.layout.ssts.len() < new_level {
+        while self.layout.ssts.len() < target_level {
             self.layout.ssts.push(Vec::new());
         }
-        self.layout.ssts[new_level - 1].push(Sst::new(&mut self.dir, new_sst_path.to_owned()));
+
+        let mut index_to_insert_at = 0;
+        if let Some(ref new_sst_path) = new_sst_path {
+            let new_sst = Sst::new(&mut self.dir, new_sst_path.to_owned());
+
+            index_to_insert_at = self.layout.ssts[target_level - 1]
+                .binary_search_by_key(&&new_sst.max_key, |sst| &sst.max_key)
+                .unwrap_err();
+
+            self.layout.ssts[target_level - 1].insert(index_to_insert_at, new_sst);
+        }
 
         self.root.transform(move |mut layout| {
             layout.next_sst_id += 1;
             for sst in ssts {
                 layout.remove_sst(&sst.filename);
             }
-            layout.add_sst(new_sst_path, new_level);
+            if let Some(new_sst_path) = new_sst_path {
+                layout.add_sst(new_sst_path, target_level, index_to_insert_at);
+            }
             layout
         })?;
 
@@ -537,11 +561,12 @@ where
         let sst_name = sst_path.clone();
         let max_used_seqnum = self.next_seqnum - 1;
         self.root.transform(move |mut layout| {
+            layout.next_sst_id += 1;
+
             layout.wals = vec![wal_name];
             layout.l0.push(sst_name);
             assert!(layout.max_sst_seqnum <= max_used_seqnum);
             layout.max_sst_seqnum = max_used_seqnum;
-            layout.next_sst_id += 1;
 
             layout
         })?;

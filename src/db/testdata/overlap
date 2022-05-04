@@ -1,0 +1,78 @@
+insert
+b=foo
+----
+ok
+
+flush-memtable
+----
+ok
+
+merge
+0,0
+----
+ok
+
+delete
+c
+----
+ok
+
+delete
+a
+----
+ok
+
+flush-memtable
+----
+ok
+
+merge
+0,0
+----
+ok
+
+dump
+layout
+----
+Layout {
+    active_memtable: Memtable {
+        prev_seqnum: 0,
+        entries: [],
+    },
+    l0: [],
+    ssts: [
+        [
+            Sst {
+                filename: "sst1.sst",
+                min_key: (
+                    "b",
+                    2,
+                ),
+                max_key: (
+                    "b",
+                    2,
+                ),
+                num_bytes: 121,
+                _marker: PhantomData,
+            },
+            Sst {
+                filename: "sst3.sst",
+                min_key: (
+                    "a",
+                    4,
+                ),
+                max_key: (
+                    "c",
+                    3,
+                ),
+                num_bytes: 165,
+                _marker: PhantomData,
+            },
+        ],
+    ],
+}
+
+get
+b
+----
+None

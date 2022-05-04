@@ -20,12 +20,13 @@ fn test_db_trace() {
             }
             "get" => {
                 let key = test_case.input.trim();
-                let iter = db.get(&key.to_owned());
+                let iter = db.get(&key.to_owned()).unwrap();
 
                 format!("{:?}\n", iter)
             }
             "scan" => db
                 .scan()
+                .unwrap()
                 .map(|x| format!("{:?}\n", x))
                 .collect::<Vec<_>>()
                 .join(""),
@@ -41,9 +42,10 @@ fn test_db_trace() {
                     .map(|(l1, i1)| (l1.parse().unwrap(), i1.parse().unwrap()))
                     .collect::<Vec<_>>();
 
-                db.merge(&targets);
-
-                "ok\n".into()
+                match db.merge(&targets) {
+                    Ok(()) => "ok\n".into(),
+                    Err(err) => format!("{}", err),
+                }
             }
             "trace" => {
                 let mut result = String::new();

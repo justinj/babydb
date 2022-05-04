@@ -355,14 +355,16 @@ where
             .map(|(level, idx)| self.retrieve_sst(*level, *idx))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let readers = ssts.iter().map(|sst| {
-            SstReader::<(K, usize), Option<V>, D>::load(
-                self.dir
-                    .open(&sst.filename)
-                    .expect("sst file did not exist"),
-            )
-            .unwrap()
-        });
+        let readers = ssts
+            .iter()
+            .map(|sst| {
+                SstReader::<(K, usize), Option<V>, D>::load(
+                    self.dir
+                        .open(&sst.filename)
+                        .expect("sst file did not exist"),
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         let merged = MergingIter::new(readers);
         // TODO: we need a new name for this.
@@ -372,7 +374,7 @@ where
             .create(&new_sst_path)
             .expect("sst file already existed");
         let sst_writer = SstWriter::new(merged, sst_file);
-        sst_writer.write().unwrap();
+        sst_writer.write()?;
 
         for sst in &ssts {
             self.remove_sst_from_in_memory(&sst.filename);
@@ -387,16 +389,14 @@ where
         }
         self.layout.ssts[new_level - 1].push(Sst::new(&mut self.dir, new_sst_path.to_owned()));
 
-        self.root
-            .transform(move |mut layout| {
-                layout.next_sst_id += 1;
-                for sst in ssts {
-                    layout.remove_sst(&sst.filename);
-                }
-                layout.add_sst(new_sst_path, new_level);
-                layout
-            })
-            .unwrap();
+        self.root.transform(move |mut layout| {
+            layout.next_sst_id += 1;
+            for sst in ssts {
+                layout.remove_sst(&sst.filename);
+            }
+            layout.add_sst(new_sst_path, new_level);
+            layout
+        })?;
 
         // TODO: now unlink the old ssts.
         Ok(())
@@ -439,28 +439,30 @@ where
         self.ratchet_visible_seqnum(self.next_seqnum);
     }
 
-    fn get(&mut self, k: &K) -> Option<V>
+    fn get(&mut self, k: &K) -> anyhow::Result<Option<V>>
     where
         K: 'static,
         V: 'static,
     {
-        let scan = self.scan();
+        let scan = self.scan()?;
         let mut iter = scan.iter;
         iter.seek_ge(k);
-        let next = iter.next()?;
-        if next.0 == k {
-            Some(next.1.clone())
+        if let Some(next) = iter.next() {
+            if next.0 == k {
+                Ok(Some(next.1.clone()))
+            } else {
+                Ok(None)
+            }
         } else {
-            None
+            Ok(None)
         }
     }
 
-    fn scan(&mut self) -> DbIterator<K, V, impl KVIter<K, V>>
+    fn scan(&mut self) -> anyhow::Result<DbIterator<K, V, impl KVIter<K, V>>>
     where
         K: 'static,
         V: 'static,
     {
-        // TODO: get rid of the unwraps in here.
         let tab = self.layout.active_memtable.scan();
 
         // Every SST in L0 is read independently, but the lower-level ones get
@@ -473,20 +475,21 @@ where
                     self.dir
                         .open(&sst.filename)
                         .expect("sst file did not exist"),
-                )
-                .unwrap(),
+                )?,
             ]))
         }
 
         for level in &self.layout.ssts {
-            let readers = level.iter().map(|sst| {
-                SstReader::load(
-                    self.dir
-                        .open(&sst.filename)
-                        .expect("sst file did not exist"),
-                )
-                .unwrap()
-            });
+            let readers = level
+                .iter()
+                .map(|sst| {
+                    SstReader::load(
+                        self.dir
+                            .open(&sst.filename)
+                            .expect("sst file did not exist"),
+                    )
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
             if readers.len() > 0 {
                 level_readers.push(LevelIter::new(readers))
             }
@@ -497,10 +500,10 @@ where
         let lhs: Box<dyn KVIter<(K, usize), Option<V>>> = Box::new(sst_merge);
         let merged = MergingIter::new([Box::new(tab), lhs]);
         let scan = SeqnumIter::new(self.visible_seqnum.load(Ordering::SeqCst), merged);
-        DbIterator {
+        Ok(DbIterator {
             iter: scan,
             _marker: PhantomData,
-        }
+        })
     }
 
     fn flush_memtable(&mut self) -> anyhow::Result<()> {
@@ -583,7 +586,7 @@ mod test {
             }
         }
 
-        let db_data: Vec<_> = db.scan().collect();
+        let db_data: Vec<_> = db.scan().unwrap().collect();
         let iter_data: Vec<_> = map.into_iter().collect();
 
         assert_eq!(db_data, iter_data);
@@ -703,7 +706,7 @@ mod test {
             db.insert(format!("memkey{}", i), format!("bar{}", i));
         }
 
-        let iter = db.scan();
+        let iter = db.scan().unwrap();
 
         assert_eq!(
             iter.collect::<Vec<_>>(),
@@ -750,11 +753,11 @@ mod test {
             db.insert(format!("memkey{}", i), format!("bar{}", i));
         }
 
-        let prev_data: Vec<_> = db.scan().collect();
+        let prev_data: Vec<_> = db.scan().unwrap().collect();
 
         let mut db: Db<_, String, String> = Db::new(dir).unwrap();
 
-        let post_data: Vec<_> = db.scan().collect();
+        let post_data: Vec<_> = db.scan().unwrap().collect();
 
         assert_eq!(prev_data, post_data);
     }

@@ -69,6 +69,42 @@ impl TestCase {
             }
         }
     }
+
+    fn run(&self) -> Vec<Option<String>> {
+        Self::run_iter(self.clone())
+    }
+
+    fn run_logical(&self) -> Vec<Option<String>> {
+        Self::run_iter(self.logical_ops.clone().into_iter())
+    }
+
+    fn run_iter<I: Iterator<Item = Op>>(it: I) -> Vec<Option<String>> {
+        let dir = MockDir::new();
+
+        let mut db: Db<_, String, String> = Db::new(dir.clone()).unwrap();
+
+        let mut out = Vec::new();
+
+        for input in it {
+            match input {
+                Op::Insert(k, v) => db.insert(k, v),
+                Op::Delete(k) => db.delete(k),
+                Op::Get(k) => out.push(db.get(&k).unwrap()),
+                Op::FlushMemtable => {
+                    db.flush_memtable().unwrap();
+                }
+                Op::Reload => {
+                    db = Db::new(dir.clone()).unwrap();
+                }
+                Op::Merge(target) => {
+                    // It's ok if this doesn't do anything.
+                    let _ = db.merge(&[target]);
+                }
+            }
+        }
+
+        out
+    }
 }
 
 impl Iterator for TestCase {
@@ -89,34 +125,6 @@ impl Iterator for TestCase {
     }
 }
 
-fn run_sequence(inputs: TestCase) -> Vec<Option<String>> {
-    let dir = MockDir::new();
-
-    let mut db: Db<_, String, String> = Db::new(dir.clone()).unwrap();
-
-    let mut out = Vec::new();
-
-    for input in inputs {
-        match input {
-            Op::Insert(k, v) => db.insert(k, v),
-            Op::Delete(k) => db.delete(k),
-            Op::Get(k) => out.push(db.get(&k)),
-            Op::FlushMemtable => {
-                db.flush_memtable().unwrap();
-            }
-            Op::Reload => {
-                db = Db::new(dir.clone()).unwrap();
-            }
-            Op::Merge(target) => {
-                // It's ok if this doesn't do anything.
-                let _ = db.merge(&[target]);
-            }
-        }
-    }
-
-    out
-}
-
 #[test]
 fn metamorphic_test() {
     let mut rng = rand::thread_rng();
@@ -132,70 +140,63 @@ fn metamorphic_test() {
         })
         .collect::<Vec<_>>();
 
-    let mut inputs = TestCase::new(inputs, Vec::new());
-
-    let mut new_inputs = inputs.clone();
-
-    let expected_output = run_sequence(inputs.clone());
+    let mut test_case = TestCase::new(inputs, Vec::new());
 
     for _ in 0..100 {
-        let idx = rng.gen_range(0..new_inputs.logical_len());
+        let idx = rng.gen_range(0..test_case.logical_len());
         match rng.gen_range(0..3) {
-            0 => new_inputs.add_physical_op(idx, Op::FlushMemtable),
-            1 => new_inputs.add_physical_op(idx, Op::Reload),
-            2 => new_inputs
+            0 => test_case.add_physical_op(idx, Op::FlushMemtable),
+            1 => test_case.add_physical_op(idx, Op::Reload),
+            2 => test_case
                 .add_physical_op(idx, Op::Merge((rng.gen_range(0..3), rng.gen_range(0..3)))),
             _ => unreachable!(),
         }
     }
 
-    new_inputs.sort();
+    test_case.sort();
 
-    let new_output = run_sequence(new_inputs.clone());
+    let expected_output = test_case.run_logical();
+    let new_output = test_case.run();
 
     if new_output != expected_output {
         let reduced_case = loop {
             let mut better_case = None;
 
-            for idx in 0..inputs.logical_len() {
-                let mut inputs_reduced = inputs.clone();
-                let mut new_inputs_reduced = new_inputs.clone();
-                inputs_reduced.apply_reduction(Reduction::DeleteLogicalOp(idx));
-                new_inputs_reduced.apply_reduction(Reduction::DeleteLogicalOp(idx));
+            for idx in 0..test_case.logical_len() {
+                let mut reduced = test_case.clone();
+                reduced.apply_reduction(Reduction::DeleteLogicalOp(idx));
 
-                let a_output = run_sequence(inputs_reduced.clone());
-                let b_output = run_sequence(new_inputs_reduced.clone());
+                let a_output = reduced.run();
+                let b_output = reduced.run_logical();
 
                 if a_output != b_output {
-                    better_case = Some((inputs_reduced, new_inputs_reduced));
+                    better_case = Some(reduced);
                     break;
                 }
             }
-            if let Some((a, b)) = better_case {
-                inputs = a;
-                new_inputs = b;
+            if let Some(tc) = better_case {
+                test_case = tc;
                 continue;
             }
 
-            for idx in 0..new_inputs.physical_len() {
-                let mut new_inputs_reduced = new_inputs.clone();
-                new_inputs_reduced.apply_reduction(Reduction::DeletePhysicalOp(idx));
+            for idx in 0..test_case.physical_len() {
+                let mut reduced = test_case.clone();
+                reduced.apply_reduction(Reduction::DeletePhysicalOp(idx));
 
-                let a_output = run_sequence(inputs.clone());
-                let b_output = run_sequence(new_inputs_reduced.clone());
+                let a_output = reduced.run();
+                let b_output = reduced.run_logical();
 
                 if a_output != b_output {
-                    better_case = Some((inputs.clone(), new_inputs_reduced));
+                    better_case = Some(reduced);
                     break;
                 }
             }
-            if let Some((a, b)) = better_case {
-                inputs = a;
-                new_inputs = b;
+            if let Some(tc) = better_case {
+                test_case = tc;
                 continue;
             }
 
-            break (inputs, new_inputs);
+            break test_case;
         };
 
         println!("reduced case: {:#?}", reduced_case);

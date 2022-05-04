@@ -143,8 +143,6 @@ where
             unreachable!()
         };
 
-        let data_length = bytes_written;
-
         // Write the index block.
         self.file.write(&index)?;
 
@@ -159,9 +157,6 @@ where
         self.file.write(&data)?;
         metadata_len += data.len();
 
-        // Write the length of the data block.
-        self.file.write(&(data_length as u32).to_le_bytes())?;
-        metadata_len += 4;
         // Write the length of the index block.
         self.file.write(&(index.len() as u32).to_le_bytes())?;
         metadata_len += 4;

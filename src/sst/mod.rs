@@ -25,6 +25,5 @@ pub mod writer;
 // Finally, after all the data blocks and the index block, metadata about the SST is written.
 // At time of writiing, that metadata is:
 // * the minimum key in the block,
-// * the maximum key in the block,
-// * the length of the index block, and
-// * the length of all of the data blocks together.
+// * the maximum key in the block, and
+// * the length of the index block (which is needed to parse the SST).

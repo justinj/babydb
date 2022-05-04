@@ -417,10 +417,8 @@ where
 
         file.seek(SeekFrom::End(-4 - meta_len))?;
 
-        // TODO: write a length-prefixed helper.
-
-        // TODO: can we derive 12 here instead of hardcoding it?
-        let mut bounds_info = (0..(meta_len - 8)).map(|_| 0u8).collect::<Vec<_>>();
+        // TODO: can we derive this value here instead of hardcoding it?
+        let mut bounds_info = (0..(meta_len - 4)).map(|_| 0u8).collect::<Vec<_>>();
         file.read_exact(&mut bounds_info)?;
 
         let mut reader = KeyReader::new();
@@ -434,16 +432,13 @@ where
         let max_key = (*b.next().unwrap().0).clone();
 
         let mut buf = [0_u8; 4];
-        file.read_exact(&mut buf)?;
-        // TODO: do we need this?
-        let _data_len = u32::from_le_bytes(buf);
 
         file.read_exact(&mut buf)?;
         let index_len = u32::from_le_bytes(buf);
 
         // Load the index block into memory.
         file.seek(SeekFrom::End(-4 - (index_len as i64) - meta_len))?;
-        let mut index_data: Vec<_> = (0..index_len).map(|_| 0).collect();
+        let mut index_data: Vec<_> = vec![0; index_len.try_into()?];
         file.read_exact(&mut index_data)?;
         let mut index_block = Block::new();
         let len = index_data.len() as u32;

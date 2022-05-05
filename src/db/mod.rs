@@ -21,6 +21,7 @@ use crate::{
 
 use self::level_iter::LevelIter;
 
+mod keyspace_subset;
 mod level_iter;
 #[cfg(test)]
 mod metamorphic_test;

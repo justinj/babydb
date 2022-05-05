@@ -290,8 +290,11 @@ where
     fn seek_ge(&mut self, key: &K) {
         // TODO: we should use a buffer to clone_into the key here.
         self.iter.seek_ge(&(key.clone(), 0));
-        self.physical_forwards();
-        self.state = PhysicalState::FwdBehind;
+        if self.physical_forwards() {
+            self.state = PhysicalState::FwdBehind;
+        } else {
+            self.state = PhysicalState::FwdEq;
+        }
     }
 
     fn start(&mut self) {

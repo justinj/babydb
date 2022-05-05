@@ -1,78 +1,92 @@
-insert
-b=foo
-----
-ok
+# TestCase {
+#     logical_ops: [
+#         Delete( "key2",),
+#         Delete( "key1",),
+#         Insert( "key0", "value6",),
+#         Insert( "key1", "value9",),
+#         Insert( "key8", "value9",),
+#         Delete( "key0",),
+#         Insert( "key1", "value8",),
+#         Get( "key1",),
+#     ],
+#     physical_ops: [
+#         ( 2, FlushMemtable,),
+#         ( 3, FlushMemtable,),
+#         ( 4, FlushMemtable,),
+#         ( 4, Merge( ( 0, 0,),),),
+#         ( 5, FlushMemtable,),
+#         ( 6, FlushMemtable,),
+#         ( 6, Merge( ( 0, 2,),),),
+#         ( 7, FlushMemtable,),
+#         ( 7, Merge( ( 0, 2,),),),
+#     ],
+# }
 
-flush-memtable
-----
-ok
 
-merge
-0,0
-----
-ok
-
-delete
-c
-----
-ok
-
-delete
-a
-----
-ok
-
-flush-memtable
-----
-ok
-
-merge
-0,0
-----
-ok
-
-dump
-layout
-----
-Layout {
-    active_memtable: Memtable {
-        prev_seqnum: 0,
-        entries: [],
-    },
-    l0: [],
-    ssts: [
-        [
-            Sst {
-                filename: "sst1.sst",
-                min_key: (
-                    "b",
-                    2,
-                ),
-                max_key: (
-                    "b",
-                    2,
-                ),
-                num_bytes: 121,
-                _marker: PhantomData,
-            },
-            Sst {
-                filename: "sst3.sst",
-                min_key: (
-                    "a",
-                    4,
-                ),
-                max_key: (
-                    "c",
-                    3,
-                ),
-                num_bytes: 165,
-                _marker: PhantomData,
-            },
-        ],
-    ],
-}
-
-get
-b
-----
-None
+# TestCase {
+#     logical_ops: [
+#         Delete(
+#             "key1",
+#         ),
+#         Delete(
+#             "key5",
+#         ),
+#         Insert(
+#             "key1",
+#             "value8",
+#         ),
+#         Insert(
+#             "key0",
+#             "value8",
+#         ),
+#         Insert(
+#             "key1",
+#             "value2",
+#         ),
+#         Insert(
+#             "key1",
+#             "value1",
+#         ),
+#         Get(
+#             "key1",
+#         ),
+#     ],
+#     physical_ops: [
+#         (
+#             1,
+#             FlushMemtable,
+#         ),
+#         (
+#             3,
+#             FlushMemtable,
+#         ),
+#         (
+#             4,
+#             FlushMemtable,
+#         ),
+#         (
+#             5,
+#             Merge(
+#                 (
+#                     0,
+#                     2,
+#                 ),
+#             ),
+#         ),
+#         (
+#             6,
+#             FlushMemtable,
+#         ),
+#         (
+#             6,
+#             Merge(
+#                 (
+#                     0,
+#                     1,
+#                 ),
+#             ),
+#         ),
+#     ],
+#     logical_idx: 0,
+#     physical_idx: 0,
+# }

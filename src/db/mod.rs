@@ -19,7 +19,7 @@ use crate::{
     sst::{reader::SstReader, writer::SstWriter},
 };
 
-use self::level_iter::LevelIter;
+use self::{keyspace_subset::KeyspaceSubset, level_iter::LevelIter};
 
 mod keyspace_subset;
 mod level_iter;
@@ -356,6 +356,30 @@ where
 
         if targets.is_empty() {
             return Ok(());
+        }
+
+        // to_merge
+        // affected_ranges
+
+        let desired_targets: HashSet<_> = targets.into_iter().collect();
+        let mut affected_ranges = KeyspaceSubset::<(K, usize)>::new();
+        let mut targets = Vec::new();
+
+        for (level_index, level) in std::iter::once(&self.layout.l0)
+            .chain(self.layout.ssts.iter())
+            .enumerate()
+        {
+            for (index, sst) in level.iter().enumerate() {
+                let sst_name = (level_index, index);
+
+                let my_range =
+                    KeyspaceSubset::new_from_singleton((sst.min_key.clone(), sst.max_key.clone()));
+
+                if desired_targets.contains(&sst_name) || affected_ranges.intersects(&my_range) {
+                    targets.push(sst_name);
+                    affected_ranges = affected_ranges.union(&my_range);
+                }
+            }
         }
 
         // TODO: we need an async version of this.

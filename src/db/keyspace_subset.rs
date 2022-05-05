@@ -4,7 +4,7 @@
 //   bar    baz    foo zed
 // [(bar, baz), (foo, zed)]
 #[derive(Debug, Clone)]
-struct KeyspaceSubset<K>
+pub struct KeyspaceSubset<K>
 where
     K: Clone + Ord + std::fmt::Debug,
 {
@@ -24,17 +24,17 @@ impl<K> KeyspaceSubset<K>
 where
     K: Clone + Ord + std::fmt::Debug,
 {
-    fn new() -> Self {
+    pub fn new() -> Self {
         KeyspaceSubset { ranges: Vec::new() }
     }
 
-    fn new_from_singleton(interval: (K, K)) -> Self {
+    pub fn new_from_singleton(interval: (K, K)) -> Self {
         KeyspaceSubset {
             ranges: vec![interval],
         }
     }
 
-    fn intersects(&self, other: &KeyspaceSubset<K>) -> bool {
+    pub fn intersects(&self, other: &KeyspaceSubset<K>) -> bool {
         let mut my_idx = 0;
         let mut other_idx = 0;
         while my_idx < self.ranges.len() && other_idx < other.ranges.len() {
@@ -52,7 +52,7 @@ where
         false
     }
 
-    fn union(&self, other: &KeyspaceSubset<K>) -> KeyspaceSubset<K> {
+    pub fn union(&self, other: &KeyspaceSubset<K>) -> KeyspaceSubset<K> {
         let mut my_idx = 0;
         let mut other_idx = 0;
 

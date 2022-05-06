@@ -137,7 +137,6 @@ impl Iterator for TestCase {
 
 #[test]
 fn metamorphic_test() {
-    return;
     for _ in 0..1000 {
         let mut rng = rand::thread_rng();
         let inputs = (0..50)

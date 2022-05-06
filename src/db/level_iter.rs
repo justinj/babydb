@@ -81,7 +81,7 @@ where
     fn seek_ge(&mut self, key: &K) {
         self.idx = match self.index.binary_search_by_key(&key, |(k, _)| k) {
             Ok(i) => i,
-            Err(i) => i.saturating_sub(1),
+            Err(i) => std::cmp::min(i, self.iters.len() - 1),
         };
 
         self.iters[self.idx].seek_ge(key);

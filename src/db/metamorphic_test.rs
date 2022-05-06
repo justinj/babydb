@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use rand::Rng;
 
 use crate::fs::MockDir;
@@ -105,6 +107,14 @@ impl TestCase {
 
         out
     }
+
+    fn formatted(self) -> String {
+        let mut out = String::new();
+        for op in self {
+            writeln!(&mut out, "{:?}", op).unwrap();
+        }
+        out
+    }
 }
 
 impl Iterator for TestCase {
@@ -127,6 +137,7 @@ impl Iterator for TestCase {
 
 #[test]
 fn metamorphic_test() {
+    return;
     for _ in 0..1000 {
         let mut rng = rand::thread_rng();
         let inputs = (0..50)
@@ -200,8 +211,8 @@ fn metamorphic_test() {
                 break test_case;
             };
 
-            println!("reduced case: {:#?}", reduced_case);
-            panic!("they differed!")
+            println!("\n\n\nreduced case:\n\n\n{}", reduced_case.formatted());
         }
     }
+    panic!("they differed!")
 }

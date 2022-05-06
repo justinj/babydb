@@ -43,7 +43,7 @@ where
 
 impl<K, V, I> KVIter<K, V> for LevelIter<K, V, I>
 where
-    K: Ord,
+    K: Ord + std::fmt::Debug,
     I: KVIter<K, V>,
 {
     fn next(&mut self) -> Option<(&K, &V)> {

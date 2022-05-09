@@ -400,7 +400,8 @@ where
 
 impl<I, K, V> MergingIter<I, K, V>
 where
-    K: Ord,
+    K: Ord + std::fmt::Debug,
+    V: std::fmt::Debug,
     I: KVIter<K, V>,
 {
     pub fn new<J>(j: J) -> Self
@@ -440,12 +441,12 @@ where
         for (idx, it) in self.iters.iter_mut().enumerate() {
             match highest {
                 None => {
-                    highest = it.peek_prev().map(|kv| (idx, kv));
+                    highest = it.peek_prev().map(|(k, _v)| (idx, k));
                 }
-                Some((_, (k, v))) => {
+                Some((_, k)) => {
                     if let Some((k2, _)) = it.peek_prev() {
                         if k2 > k {
-                            highest = Some((idx, (k, v)));
+                            highest = Some((idx, k2));
                         }
                     }
                 }

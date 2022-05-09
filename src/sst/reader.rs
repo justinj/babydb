@@ -174,6 +174,7 @@ where
             self.buf.extend((0..len).map(|_| 0));
 
             data.read_exact(&mut self.buf[(prefix as usize)..])?;
+
             let mut kr = KeyReader::new();
             kr.load(&self.buf);
             self.data.push(<(K, V)>::decode(&mut kr)?);
@@ -343,7 +344,7 @@ where
 
     fn start(&mut self) {
         self.index_block.align_start();
-        self.state = ReaderState::LeftOfLoadedBlock;
+        self.state = ReaderState::RightOfLoadedBlock;
         self.next_block().unwrap();
     }
 
@@ -442,6 +443,7 @@ where
         file.read_exact(&mut index_data)?;
         let mut index_block = Block::new();
         let len = index_data.len() as u32;
+
         index_block.load(&mut Cursor::new(index_data), len)?;
 
         file.seek(SeekFrom::Start(0))?;

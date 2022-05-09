@@ -1,0 +1,83 @@
+insert
+key1=value5
+----
+ok
+
+flush-memtable
+----
+ok
+
+insert
+key2=value1
+----
+ok
+
+insert
+key2=value1
+----
+ok
+
+insert
+key2=value7
+----
+ok
+
+flush-memtable
+----
+ok
+
+merge
+0,0
+----
+ok
+
+merge
+0,0
+----
+ok
+
+dump
+layout
+----
+Layout {
+    active_memtable: Memtable {
+        prev_seqnum: 0,
+        entries: [],
+    },
+    l0: [],
+    ssts: [
+        [
+            Sst {
+                filename: "sst2.sst",
+                min_key: (
+                    "key1",
+                    2,
+                ),
+                max_key: (
+                    "key1",
+                    2,
+                ),
+                num_bytes: 133,
+                _marker: PhantomData,
+            },
+            Sst {
+                filename: "sst3.sst",
+                min_key: (
+                    "key2",
+                    3,
+                ),
+                max_key: (
+                    "key2",
+                    5,
+                ),
+                num_bytes: 263,
+                _marker: PhantomData,
+            },
+        ],
+    ],
+}
+
+get
+key2
+----
+Some("value7")

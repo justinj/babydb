@@ -68,14 +68,14 @@ scan
 ----
 > ("baz", 2)=Some("baz2")
 > ("baz", 3)=Some("baz3")
-> ("foo", 2)=Some("foo2")
+> ("baz", 4)=Some("baz4")
 
 scan
 >>>>>>>><<<
 ----
+> ("foo", 1)=Some("foo1")
+> ("foo", 2)=Some("foo2")
 > ("foo", 3)=Some("foo3")
-> eof
-> eof
 > eof
 > eof
 > eof

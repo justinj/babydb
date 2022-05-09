@@ -16,6 +16,19 @@ enum Op {
     Merge((usize, usize)),
 }
 
+impl Op {
+    fn to_trace(&self) -> String {
+        match self {
+            Op::Insert(k, v) => format!("insert\n{}={}\n----\n", k, v),
+            Op::Delete(k) => format!("delete\n{}\n----\n", k),
+            Op::Get(k) => format!("get\n{}\n----\n", k),
+            Op::FlushMemtable => "flush-memtable\n----\n".to_owned(),
+            Op::Reload => "reload\n----\n".to_owned(),
+            Op::Merge((level, index)) => format!("merge\n{},{}\n----\n", level, index),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 enum Reduction {
     DeleteLogicalOp(usize),
@@ -111,7 +124,7 @@ impl TestCase {
     fn formatted(self) -> String {
         let mut out = String::new();
         for op in self {
-            writeln!(&mut out, "{:?}", op).unwrap();
+            writeln!(&mut out, "{}", op.to_trace()).unwrap();
         }
         out
     }
@@ -137,7 +150,7 @@ impl Iterator for TestCase {
 
 #[test]
 fn metamorphic_test() {
-    for _ in 0..1000 {
+    for _ in 0..100 {
         let mut rng = rand::thread_rng();
         let inputs = (0..50)
             .map(|_| match rng.gen_range(0..3) {
@@ -211,7 +224,7 @@ fn metamorphic_test() {
             };
 
             println!("\n\n\nreduced case:\n\n\n{}", reduced_case.formatted());
+            panic!("they differed!")
         }
     }
-    panic!("they differed!")
 }

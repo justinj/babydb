@@ -137,6 +137,8 @@ where
             block_buffer.clear();
         }
 
+        self.it.end();
+
         let max_key = if let Some((k, _)) = self.it.peek_prev() {
             k.clone()
         } else {

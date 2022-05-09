@@ -44,7 +44,8 @@ where
 impl<K, V, I> KVIter<K, V> for LevelIter<K, V, I>
 where
     K: Ord + std::fmt::Debug,
-    I: KVIter<K, V>,
+    V: std::fmt::Debug,
+    I: KVIter<K, V> + std::fmt::Debug,
 {
     fn next(&mut self) -> Option<(&K, &V)> {
         while self.idx < self.iters.len() - 1 && self.iters[self.idx].peek().is_none() {
@@ -81,7 +82,7 @@ where
     fn seek_ge(&mut self, key: &K) {
         self.idx = match self.index.binary_search_by_key(&key, |(k, _)| k) {
             Ok(i) => i,
-            Err(i) => std::cmp::min(i, self.iters.len() - 1),
+            Err(i) => std::cmp::min(i.saturating_sub(1), self.iters.len() - 1),
         };
 
         self.iters[self.idx].seek_ge(key);

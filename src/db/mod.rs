@@ -358,9 +358,6 @@ where
             return Ok(());
         }
 
-        // to_merge
-        // affected_ranges
-
         let desired_targets: HashSet<_> = targets.into_iter().collect();
         let mut affected_ranges = KeyspaceSubset::<(K, usize)>::new();
         let mut targets = Vec::new();
@@ -388,6 +385,7 @@ where
             .map(|(level, idx)| self.retrieve_sst(*level, *idx))
             .collect::<Result<Vec<_>, _>>()?;
 
+        // TODO: we should leveliter the ssts that are at the same level, rather than mergeiter.
         let readers = ssts
             .iter()
             .map(|sst| {

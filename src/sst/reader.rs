@@ -20,7 +20,7 @@ struct Reader<T: Decode, R: Seek + Read> {
 
 impl<T, R> Iterator for Reader<T, R>
 where
-    T: Decode,
+    T: Decode + std::fmt::Debug,
     R: Seek + Read,
 {
     type Item = T;
@@ -32,7 +32,7 @@ where
 
 impl<T, R> Reader<T, R>
 where
-    T: Decode,
+    T: Decode + std::fmt::Debug,
     R: Seek + Read,
 {
     // TODO: should be u64

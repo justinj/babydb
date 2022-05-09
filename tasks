@@ -1,0 +1,2 @@
+* Add a space optimization for fixed-size keys.
+* Add tests where the FS stops accepting writes after a while, simulating a crash.

@@ -57,6 +57,10 @@ impl KeyWriter {
         copy_escaped(buf, &mut self.buf);
     }
 
+    fn write_fixed_size(&mut self, buf: &[u8]) {
+        self.buf.extend(buf);
+    }
+
     fn separator(&mut self) {
         self.buf.extend([0x00, 0x01]);
     }
@@ -107,10 +111,19 @@ impl KeyReader {
 
         &self.scratch
     }
+
+    pub fn next_fixed_size(&mut self, n: usize) -> &[u8] {
+        let from = self.from;
+        self.from += n;
+        &self.buf[from..from + n]
+    }
 }
 
 pub trait Encode: std::fmt::Debug {
     fn write_bytes(&self, kw: &mut KeyWriter);
+    fn needs_delimiter(&self) -> bool {
+        true
+    }
 }
 
 pub trait Decode: Sized {
@@ -119,6 +132,7 @@ pub trait Decode: Sized {
 
 impl<T: Encode> Encode for Vec<T> {
     fn write_bytes(&self, kw: &mut KeyWriter) {
+        // TODO: could we do this with separators somehow?
         kw.write(&self.len().to_le_bytes());
         for v in self {
             v.write_bytes(kw);
@@ -151,13 +165,17 @@ impl Decode for String {
 
 impl Encode for usize {
     fn write_bytes(&self, kw: &mut KeyWriter) {
-        kw.write(&self.to_le_bytes())
+        kw.write_fixed_size(&self.to_le_bytes())
+    }
+
+    fn needs_delimiter(&self) -> bool {
+        false
     }
 }
 
 impl Decode for usize {
     fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
-        let next = kr.next();
+        let next = kr.next_fixed_size((usize::BITS / 8).try_into()?);
         Ok(Self::from_le_bytes(next.try_into()?))
     }
 }
@@ -177,13 +195,17 @@ impl Decode for u8 {
 
 impl Encode for u32 {
     fn write_bytes(&self, kw: &mut KeyWriter) {
-        kw.write(&self.to_le_bytes())
+        kw.write_fixed_size(&self.to_le_bytes())
+    }
+
+    fn needs_delimiter(&self) -> bool {
+        false
     }
 }
 
 impl Decode for u32 {
     fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
-        Ok(Self::from_le_bytes(kr.next().try_into()?))
+        Ok(Self::from_le_bytes(kr.next_fixed_size(4).try_into()?))
     }
 }
 
@@ -194,6 +216,10 @@ where
     fn write_bytes(&self, kw: &mut KeyWriter) {
         (*self).write_bytes(kw)
     }
+
+    fn needs_delimiter(&self) -> bool {
+        (*self).needs_delimiter()
+    }
 }
 
 impl<A, B> Encode for (A, B)
@@ -203,15 +229,21 @@ where
 {
     fn write_bytes(&self, kw: &mut KeyWriter) {
         self.0.write_bytes(kw);
-        kw.separator();
+        if self.0.needs_delimiter() {
+            kw.separator();
+        }
         self.1.write_bytes(kw);
+    }
+
+    fn needs_delimiter(&self) -> bool {
+        self.1.needs_delimiter()
     }
 }
 
 impl<A, B> Decode for (A, B)
 where
-    A: Decode,
-    B: Decode,
+    A: Decode + std::fmt::Debug,
+    B: Decode + std::fmt::Debug,
 {
     fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
         let a = A::decode(kr)?;
@@ -227,14 +259,19 @@ where
     fn write_bytes(&self, kw: &mut KeyWriter) {
         match self {
             None => {
-                // TODO: necessary?
-                kw.write(&[0]);
+                kw.write_fixed_size(&[0]);
             }
             Some(v) => {
-                kw.write(&[1]);
-                kw.separator();
+                kw.write_fixed_size(&[1]);
                 v.write_bytes(kw);
             }
+        }
+    }
+
+    fn needs_delimiter(&self) -> bool {
+        match self {
+            Some(x) => x.needs_delimiter(),
+            None => false,
         }
     }
 }
@@ -244,7 +281,7 @@ where
     A: Decode,
 {
     fn decode(kr: &mut KeyReader) -> anyhow::Result<Self> {
-        let buf = kr.next();
+        let buf = kr.next_fixed_size(1);
         match buf[0] {
             0 => Ok(None),
             1 => Ok(Some(A::decode(kr)?)),

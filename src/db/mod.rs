@@ -23,6 +23,7 @@ use self::{keyspace_subset::KeyspaceSubset, level_iter::LevelIter};
 
 mod keyspace_subset;
 mod level_iter;
+mod merging_iter;
 #[cfg(test)]
 mod metamorphic_test;
 #[cfg(test)]

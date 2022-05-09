@@ -142,6 +142,9 @@ impl<T: Encode> Encode for Vec<T> {
 
 impl Encode for () {
     fn write_bytes(&self, _: &mut KeyWriter) {}
+    fn needs_delimiter(&self) -> bool {
+        false
+    }
 }
 
 impl Decode for () {

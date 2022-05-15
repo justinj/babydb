@@ -495,7 +495,7 @@ mod test {
         let mut vec_iter = VecIter::new(Rc::new(data.to_vec()));
 
         let sst_fname = "/tmp/test_sst.sst";
-        let file = dir.create(&sst_fname).unwrap();
+        let file = dir.create(&sst_fname).unwrap().unwrap();
         let data_source = vec_iter.clone();
         let writer = SstWriter::new(data_source, file);
         writer.write().unwrap();

@@ -1,8 +1,8 @@
-use std::fmt::Write;
+use std::{fmt::Write, io::Read};
 
 use rand::Rng;
 
-use crate::fs::MockDir;
+use crate::fs::{DbDir, DbFile, MockDir};
 
 use super::Db;
 
@@ -14,6 +14,7 @@ enum Op {
     FlushMemtable,
     Reload,
     Merge((usize, usize)),
+    ScheduleHardCrash(usize),
 }
 
 impl Op {
@@ -25,6 +26,7 @@ impl Op {
             Op::FlushMemtable => "flush-memtable\n----\n".to_owned(),
             Op::Reload => "reload\n----\n".to_owned(),
             Op::Merge((level, index)) => format!("merge\n{},{}\n----\n", level, index),
+            Op::ScheduleHardCrash(ops) => format!("crash-in\n{}\n----\n", ops),
         }
     }
 }
@@ -94,26 +96,53 @@ impl TestCase {
     }
 
     fn run_iter<I: Iterator<Item = Op>>(it: I) -> Vec<Option<String>> {
-        let dir = MockDir::new();
+        let mut dir = MockDir::new();
 
         let mut db: Db<_, String, String> = Db::new(dir.clone()).unwrap();
 
         let mut out = Vec::new();
 
         for input in it {
-            match input {
-                Op::Insert(k, v) => db.insert(k, v),
-                Op::Delete(k) => db.delete(k),
-                Op::Get(k) => out.push(db.get(&k).unwrap()),
-                Op::FlushMemtable => {
-                    db.flush_memtable().unwrap();
-                }
-                Op::Reload => {
+            loop {
+                let cloned = input.clone();
+                let result = match cloned {
+                    Op::Insert(k, v) => db.insert(k, v),
+                    Op::Delete(k) => db.delete(k),
+                    Op::Get(k) => {
+                        out.push(db.get(&k).unwrap());
+                        Ok(())
+                    }
+                    Op::FlushMemtable => db.flush_memtable(),
+                    Op::Reload => match Db::new(dir.clone()) {
+                        Ok(new) => {
+                            db = new;
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    },
+                    Op::Merge(target) => {
+                        // It's ok if this doesn't do anything.
+                        db.merge(vec![target], target.0 + 1)
+                    }
+                    Op::ScheduleHardCrash(ops) => {
+                        (*dir.fs).borrow_mut().schedule_crash(ops);
+                        Ok(())
+                    }
+                };
+
+                if result.is_ok() {
+                    break;
+                } else {
+                    // If this errors, it means we have hard crashed. We
+                    // should reboot the filesystem and database and retry
+                    // the operation.
+                    (*dir.fs).borrow_mut().reboot();
+                    // println!("fs = {:?}", (*dir.fs).borrow_mut());
+                    // let f = dir.open(&"ROOT").unwrap();
+                    // println!("f = {:?}", f.file_id);
+                    // let contents = f.read_all();
+                    // println!("contents = {:?}", contents);
                     db = Db::new(dir.clone()).unwrap();
-                }
-                Op::Merge(target) => {
-                    // It's ok if this doesn't do anything.
-                    let _ = db.merge(vec![target], target.0 + 1);
                 }
             }
         }
@@ -168,11 +197,12 @@ fn metamorphic_test() {
 
         for _ in 0..100 {
             let idx = rng.gen_range(0..test_case.logical_len());
-            match rng.gen_range(0..3) {
+            match rng.gen_range(0..4) {
                 0 => test_case.add_physical_op(idx, Op::FlushMemtable),
                 1 => test_case.add_physical_op(idx, Op::Reload),
                 2 => test_case
                     .add_physical_op(idx, Op::Merge((rng.gen_range(0..3), rng.gen_range(0..3)))),
+                3 => test_case.add_physical_op(idx, Op::ScheduleHardCrash(rng.gen_range(0..10))),
                 _ => unreachable!(),
             }
         }

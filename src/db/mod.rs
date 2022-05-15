@@ -248,7 +248,7 @@ where
 
         let mut empty_wals = HashSet::new();
         for wal_name in root.data.wals.iter().rev() {
-            let wal = dir.open(wal_name).unwrap();
+            let wal = dir.open(wal_name).expect("wal file did not exist");
             let mut any = false;
             for command in LogReader::<_, DBCommand<K, V>>::new(wal)? {
                 any = true;
@@ -273,7 +273,7 @@ where
                 r
             })?;
             for wal in empty_wals {
-                dir.unlink(&wal);
+                dir.unlink(&wal)?;
             }
         }
 
@@ -316,9 +316,10 @@ where
         })
     }
 
-    fn apply_command(&mut self, cmd: DBCommand<K, V>) {
-        self.wal.write(&cmd).unwrap();
+    fn apply_command(&mut self, cmd: DBCommand<K, V>) -> anyhow::Result<()> {
+        self.wal.write(&cmd)?;
         self.apply_command_volatile(cmd);
+        Ok(())
     }
 
     fn apply_command_volatile(&mut self, cmd: DBCommand<K, V>) {
@@ -405,9 +406,10 @@ where
             None
         } else {
             let new_sst_path = format!("sst{}.sst", self.root.data.next_sst_id);
+            self.dir.unlink(&new_sst_path)?;
             let sst_file = self
                 .dir
-                .create(&new_sst_path)
+                .create(&new_sst_path)?
                 .unwrap_or_else(|| panic!("sst file {} already existed", new_sst_path));
             let sst_writer = SstWriter::new(merged, sst_file);
             sst_writer.write()?;
@@ -475,16 +477,18 @@ where
         }
     }
 
-    fn insert(&mut self, k: K, v: V) {
+    fn insert(&mut self, k: K, v: V) -> anyhow::Result<()> {
         self.next_seqnum += 1;
-        self.apply_command(DBCommand::Write(self.next_seqnum, k, v));
+        self.apply_command(DBCommand::Write(self.next_seqnum, k, v))?;
         self.ratchet_visible_seqnum(self.next_seqnum);
+        Ok(())
     }
 
-    fn delete(&mut self, k: K) {
+    fn delete(&mut self, k: K) -> anyhow::Result<()> {
         self.next_seqnum += 1;
-        self.apply_command(DBCommand::Delete(self.next_seqnum, k));
+        self.apply_command(DBCommand::Delete(self.next_seqnum, k))?;
         self.ratchet_visible_seqnum(self.next_seqnum);
+        Ok(())
     }
 
     fn get(&mut self, k: &K) -> anyhow::Result<Option<V>>
@@ -565,9 +569,12 @@ where
 
         let sst_path = format!("sst{}.sst", self.root.data.next_sst_id);
 
+        // TODO: create a like, "create if not already exists"
+
+        self.dir.unlink(&sst_path)?;
         let sst_file = self
             .dir
-            .create(&sst_path)
+            .create(&sst_path)?
             .expect("sst file already existed");
         let writer = SstWriter::new(scan, sst_file);
         writer.write()?;
@@ -666,7 +673,7 @@ mod test {
                 }
                 "flush" => {
                     let sst_fname = "/tmp/test_sst.sst";
-                    let file = dir.create(&sst_fname).unwrap();
+                    let file = dir.create(&sst_fname).unwrap().unwrap();
                     let writer = SstWriter::new(VecIter::new(Rc::new(data.clone())), file);
                     writer.write().unwrap();
                     reader = Some(SstReader::load(dir.open(&sst_fname).unwrap()).unwrap());

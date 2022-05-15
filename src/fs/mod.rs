@@ -6,9 +6,11 @@ use std::{
     rc::Rc,
 };
 
+use anyhow::bail;
+
 pub trait DbFile: std::fmt::Debug + Read + Seek {
-    fn write(&mut self, buf: &[u8]) -> io::Result<()>;
-    fn sync(&mut self) -> io::Result<()>;
+    fn write(&mut self, buf: &[u8]) -> anyhow::Result<()>;
+    fn sync(&mut self) -> anyhow::Result<()>;
     fn read_all(&self) -> Vec<u8>;
     fn len(&self) -> usize;
 }
@@ -20,14 +22,13 @@ pub trait DbDir: Clone {
     where
         P: AsRef<Path>;
 
-    fn unlink<P>(&mut self, fname: &P) -> bool
+    fn unlink<P>(&mut self, fname: &P) -> anyhow::Result<bool>
     where
         P: AsRef<Path>;
 
     fn ls(&mut self) -> Vec<String>;
 
-    // TODO: these would be better as Results I think.
-    fn create<P>(&mut self, fname: &P) -> Option<Self::DbFile>
+    fn create<P>(&mut self, fname: &P) -> anyhow::Result<Option<Self::DbFile>>
     where
         P: AsRef<Path>;
 
@@ -35,8 +36,7 @@ pub trait DbDir: Clone {
     where
         P: AsRef<Path>;
 
-    // TODO: should this return an error?
-    fn rename<P, Q>(&mut self, from: &P, to: &Q)
+    fn rename<P, Q>(&mut self, from: &P, to: &Q) -> anyhow::Result<()>
     where
         P: AsRef<Path>,
         Q: AsRef<Path>;
@@ -52,7 +52,7 @@ struct MockData {
 #[derive(Clone, Debug)]
 pub struct MockFile {
     idx: usize,
-    file_id: FileId,
+    pub file_id: FileId,
     fs: Rc<RefCell<MockFs>>,
 }
 
@@ -75,7 +75,6 @@ impl Seek for MockFile {
                 self.idx = ((self.read_all().len() as i64) + i).try_into().unwrap();
             }
             io::SeekFrom::Current(x) => {
-                // TODO: What the hell how do I do this right
                 if x > 0 {
                     self.idx += x as usize;
                 } else {
@@ -99,16 +98,18 @@ impl Read for MockFile {
 }
 
 impl DbFile for MockFile {
-    fn write(&mut self, buf: &[u8]) -> io::Result<()> {
+    fn write(&mut self, buf: &[u8]) -> anyhow::Result<()> {
         let data = buf.to_vec();
-        (*self.fs).borrow_mut().write(self.file_id, self.idx, data);
+        (*self.fs)
+            .borrow_mut()
+            .write(self.file_id, self.idx, data)?;
         self.idx += buf.len();
 
         Ok(())
     }
 
-    fn sync(&mut self) -> io::Result<()> {
-        (*self.fs).borrow_mut().sync(self.file_id);
+    fn sync(&mut self) -> anyhow::Result<()> {
+        (*self.fs).borrow_mut().sync(self.file_id)?;
         Ok(())
     }
 
@@ -175,7 +176,7 @@ impl DbDir for MockDir {
         }
     }
 
-    fn unlink<P>(&mut self, fname: &P) -> bool
+    fn unlink<P>(&mut self, fname: &P) -> anyhow::Result<bool>
     where
         P: AsRef<Path>,
     {
@@ -194,18 +195,18 @@ impl DbDir for MockDir {
         fnames
     }
 
-    fn create<P>(&mut self, fname: &P) -> Option<Self::DbFile>
+    fn create<P>(&mut self, fname: &P) -> anyhow::Result<Option<Self::DbFile>>
     where
         P: AsRef<Path>,
     {
-        (*self.fs)
+        Ok((*self.fs)
             .borrow_mut()
-            .create(&self.full_path(fname))
+            .create(&self.full_path(fname))?
             .map(|file_id| MockFile {
                 fs: self.fs.clone(),
                 file_id,
                 idx: 0,
-            })
+            }))
     }
 
     fn open<P>(&mut self, fname: &P) -> Option<Self::DbFile>
@@ -222,7 +223,7 @@ impl DbDir for MockDir {
             })
     }
 
-    fn rename<P, Q>(&mut self, from: &P, to: &Q)
+    fn rename<P, Q>(&mut self, from: &P, to: &Q) -> anyhow::Result<()>
     where
         P: AsRef<Path>,
         Q: AsRef<Path>,
@@ -292,6 +293,10 @@ pub struct MockFs {
     names: HashMap<String, FileId>,
     data: Vec<MockData>,
     events: Vec<Event>,
+
+    // After this many "things happen," "crash" the FS, meaning stop accepting
+    // writes and discard any unsynced data.
+    time_to_crash: Option<usize>,
 }
 
 impl MockFs {
@@ -300,7 +305,44 @@ impl MockFs {
             names: HashMap::new(),
             data: Vec::new(),
             events: Vec::new(),
+            time_to_crash: None,
         }
+    }
+
+    fn check_crashed(&self) -> anyhow::Result<()> {
+        if self.time_to_crash == Some(0) {
+            bail!("filesystem is down")
+        } else {
+            Ok(())
+        }
+    }
+
+    #[allow(unused)]
+    pub fn schedule_crash(&mut self, ops: usize) {
+        self.time_to_crash = Some(ops);
+    }
+
+    // Discard all unsynced state, become uncrashed.
+    #[allow(unused)]
+    pub fn reboot(&mut self) {
+        for f in self.data.iter_mut() {
+            f.unsynced.clear();
+            f.unsynced.extend(&f.synced);
+        }
+        self.time_to_crash = None;
+    }
+
+    fn perform_op(&mut self) -> anyhow::Result<()> {
+        self.check_crashed()?;
+        match self.time_to_crash {
+            None | Some(0) => {}
+            Some(x) => {
+                if x > 0 {
+                    self.time_to_crash = Some(x - 1);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn record(&mut self, e: Event) {
@@ -326,14 +368,16 @@ impl MockFs {
 
 impl MockFs {
     // TODO: support various writing modes?
-    fn create<P>(&mut self, fname: &P) -> Option<FileId>
+    fn create<P>(&mut self, fname: &P) -> anyhow::Result<Option<FileId>>
     where
         P: AsRef<Path>,
     {
+        self.perform_op()?;
+
         let path = fname.as_ref().to_str().unwrap().to_owned();
         let id = match self.names.get(&path) {
             Some(_) => {
-                return None;
+                return Ok(None);
             }
             None => {
                 let data = MockData::default();
@@ -347,16 +391,18 @@ impl MockFs {
             }
         };
 
-        Some(id)
+        Ok(Some(id))
     }
 
-    fn unlink<P>(&mut self, fname: &P) -> bool
+    fn unlink<P>(&mut self, fname: &P) -> anyhow::Result<bool>
     where
         P: AsRef<Path>,
     {
+        self.perform_op()?;
+
         let path = fname.as_ref().to_str().unwrap();
         self.record(Event::Unlink(path.to_owned()));
-        self.names.remove(path).is_some()
+        Ok(self.names.remove(path).is_some())
     }
 
     fn open<P>(&mut self, fname: &P) -> Option<FileId>
@@ -368,11 +414,13 @@ impl MockFs {
         self.names.get(&path).cloned()
     }
 
-    fn rename<P, Q>(&mut self, from: &P, to: &Q)
+    fn rename<P, Q>(&mut self, from: &P, to: &Q) -> anyhow::Result<()>
     where
         P: AsRef<Path>,
         Q: AsRef<Path>,
     {
+        self.perform_op()?;
+
         let from = from.as_ref().to_str().unwrap().to_owned();
         let to = to.as_ref().to_str().unwrap().to_owned();
 
@@ -381,30 +429,39 @@ impl MockFs {
         if let Some(d) = self.names.remove(&from) {
             self.names.insert(to, d);
         }
+
+        Ok(())
     }
 
-    fn write(&mut self, file: FileId, idx: usize, data: Vec<u8>) {
-        self.record(Event::Write(file, idx, data.clone()));
+    fn write(&mut self, file: FileId, idx: usize, data: Vec<u8>) -> anyhow::Result<()> {
+        self.perform_op()?;
 
         while self.data[file].unsynced.len() < idx + data.len() {
             self.data[file].unsynced.push(0);
         }
 
         self.data[file].unsynced[idx..].copy_from_slice(&data);
+
+        self.record(Event::Write(file, idx, data));
+        Ok(())
     }
 
-    fn sync(&mut self, file: FileId) {
+    fn sync(&mut self, file: FileId) -> anyhow::Result<()> {
+        self.perform_op()?;
+
         self.record(Event::Sync(file));
         let d = &mut self.data[file];
         d.synced = d.unsynced.clone();
+
+        Ok(())
     }
 }
 
 #[test]
-fn test_mock_file() {
+fn test_mock_file() -> anyhow::Result<()> {
     let mut dir = MockDir::new();
 
-    let mut a = dir.create(&"a").unwrap();
+    let mut a = dir.create(&"a")?.unwrap();
 
     a.write(&[1, 2, 3, 4]).unwrap();
 
@@ -415,4 +472,6 @@ fn test_mock_file() {
 
     assert_eq!(vec![1, 2, 3, 4], a.read_all_synced());
     assert_eq!(vec![1, 2, 3, 4], a.read_all());
+
+    Ok(())
 }

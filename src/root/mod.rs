@@ -33,14 +33,13 @@ where
     }
 
     pub fn write(&mut self, t: T) -> anyhow::Result<()> {
-        self.dir.unlink(&"TMP_ROOT");
-        let mut file = self.dir.create(&"TMP_ROOT").unwrap();
+        self.dir.unlink(&"TMP_ROOT")?;
+        let mut file = self.dir.create(&"TMP_ROOT")?.unwrap();
         let encoded = serde_json::to_string(&t)?;
         file.write(encoded.as_bytes())?;
-        self.dir.rename(&"TMP_ROOT", &"ROOT");
+        file.sync()?;
 
-        let mut file = self.dir.open(&"ROOT").unwrap();
-        file.sync().unwrap();
+        self.dir.rename(&"TMP_ROOT", &"ROOT")?;
 
         self.data = t;
 

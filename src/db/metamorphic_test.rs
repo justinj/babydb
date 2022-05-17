@@ -15,6 +15,7 @@ enum Op {
     Reload,
     Merge((usize, usize)),
     ScheduleHardCrash(usize),
+    ScheduleSoftCrash(usize),
 }
 
 impl Op {
@@ -26,7 +27,8 @@ impl Op {
             Op::FlushMemtable => "flush-memtable\n----\n".to_owned(),
             Op::Reload => "reload\n----\n".to_owned(),
             Op::Merge((level, index)) => format!("merge\n{},{}\n----\n", level, index),
-            Op::ScheduleHardCrash(ops) => format!("crash-in\n{}\n----\n", ops),
+            Op::ScheduleHardCrash(ops) => format!("hard-crash-in\n{}\n----\n", ops),
+            Op::ScheduleSoftCrash(ops) => format!("soft-crash-in\n{}\n----\n", ops),
         }
     }
 }
@@ -128,6 +130,10 @@ impl TestCase {
                         (*dir.fs).borrow_mut().schedule_crash(ops);
                         Ok(())
                     }
+                    Op::ScheduleSoftCrash(ops) => {
+                        (*dir.fs).borrow_mut().schedule_soft_crash(ops);
+                        Ok(())
+                    }
                 };
 
                 if result.is_ok() {
@@ -203,6 +209,7 @@ fn metamorphic_test() {
                 2 => test_case
                     .add_physical_op(idx, Op::Merge((rng.gen_range(0..3), rng.gen_range(0..3)))),
                 3 => test_case.add_physical_op(idx, Op::ScheduleHardCrash(rng.gen_range(0..10))),
+                4 => test_case.add_physical_op(idx, Op::ScheduleSoftCrash(rng.gen_range(0..100))),
                 _ => unreachable!(),
             }
         }

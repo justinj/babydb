@@ -288,6 +288,29 @@ impl Event {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum CrashStatus {
+    Ok,
+    // A "hard" crash represents a crash of the entire filesystem/OS, and any
+    // unsynced data will be lost.
+    HardCrashIn(usize),
+    HardCrashed,
+    // A "soft" crash represents a crash of the process, and any unsynced data
+    // will persist through a reboot, however, operations will cease to apply
+    // until that reboot occurs.
+    SoftCrashIn(usize),
+    SoftCrashed,
+}
+
+impl CrashStatus {
+    fn is_operational(&self) -> bool {
+        matches!(
+            self,
+            CrashStatus::Ok | CrashStatus::HardCrashIn(_) | CrashStatus::SoftCrashIn(_)
+        )
+    }
+}
+
 #[derive(Debug)]
 pub struct MockFs {
     names: HashMap<String, FileId>,
@@ -296,7 +319,7 @@ pub struct MockFs {
 
     // After this many "things happen," "crash" the FS, meaning stop accepting
     // writes and discard any unsynced data.
-    time_to_crash: Option<usize>,
+    crash_status: CrashStatus,
 }
 
 impl MockFs {
@@ -305,42 +328,65 @@ impl MockFs {
             names: HashMap::new(),
             data: Vec::new(),
             events: Vec::new(),
-            time_to_crash: None,
+            crash_status: CrashStatus::Ok,
         }
     }
 
     fn check_crashed(&self) -> anyhow::Result<()> {
-        if self.time_to_crash == Some(0) {
-            bail!("filesystem is down")
-        } else {
+        if self.crash_status.is_operational() {
             Ok(())
+        } else {
+            bail!("filesystem is down")
         }
     }
 
     #[allow(unused)]
     pub fn schedule_crash(&mut self, ops: usize) {
-        self.time_to_crash = Some(ops);
+        self.crash_status = CrashStatus::HardCrashIn(ops);
     }
 
-    // Discard all unsynced state, become uncrashed.
+    #[allow(unused)]
+    pub fn schedule_soft_crash(&mut self, ops: usize) {
+        self.crash_status = CrashStatus::SoftCrashIn(ops);
+    }
+
     #[allow(unused)]
     pub fn reboot(&mut self) {
-        for f in self.data.iter_mut() {
-            f.unsynced.clear();
-            f.unsynced.extend(&f.synced);
+        match self.crash_status {
+            CrashStatus::HardCrashed => {
+                for f in self.data.iter_mut() {
+                    f.unsynced.clear();
+                    f.unsynced.extend(&f.synced);
+                }
+            }
+            CrashStatus::SoftCrashed => {
+                // Don't need to do anything here, buffers are fine.
+            }
+            _ => {}
         }
-        self.time_to_crash = None;
+        self.crash_status = CrashStatus::Ok;
     }
 
     fn perform_op(&mut self) -> anyhow::Result<()> {
         self.check_crashed()?;
-        match self.time_to_crash {
-            None | Some(0) => {}
-            Some(x) => {
-                if x > 0 {
-                    self.time_to_crash = Some(x - 1);
+        match &mut self.crash_status {
+            CrashStatus::SoftCrashIn(x) => {
+                if *x > 0 {
+                    *x -= 1;
+                }
+                if *x == 0 {
+                    self.crash_status = CrashStatus::SoftCrashed;
                 }
             }
+            CrashStatus::HardCrashIn(x) => {
+                if *x > 0 {
+                    *x -= 1;
+                }
+                if *x == 0 {
+                    self.crash_status = CrashStatus::HardCrashed;
+                }
+            }
+            CrashStatus::Ok | CrashStatus::HardCrashed | CrashStatus::SoftCrashed => {}
         }
         Ok(())
     }
@@ -433,8 +479,18 @@ impl MockFs {
         Ok(())
     }
 
-    fn write(&mut self, file: FileId, idx: usize, data: Vec<u8>) -> anyhow::Result<()> {
+    fn write(&mut self, file: FileId, idx: usize, mut data: Vec<u8>) -> anyhow::Result<()> {
         self.perform_op()?;
+
+        // Only write a prefix of bytes.
+        if let CrashStatus::SoftCrashIn(ops) = &mut self.crash_status {
+            if *ops > data.len() {
+                *ops -= data.len();
+            } else {
+                data.truncate(*ops);
+                self.crash_status = CrashStatus::SoftCrashed;
+            }
+        }
 
         while self.data[file].unsynced.len() < idx + data.len() {
             self.data[file].unsynced.push(0);

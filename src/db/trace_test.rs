@@ -14,14 +14,14 @@ fn test_db_trace() {
                     let eq_idx = line.find('=').unwrap();
                     let key = line[0..eq_idx].to_owned();
                     let val = line[eq_idx + 1..].to_owned();
-                    db.insert(key, val);
+                    db.insert(key, val).unwrap();
                 }
                 "ok\n".into()
             }
             "delete" => {
                 for line in test_case.input.lines() {
                     let key = line.to_owned();
-                    db.delete(key);
+                    db.delete(key).unwrap();
                 }
                 "ok\n".into()
             }

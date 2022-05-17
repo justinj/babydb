@@ -1,8 +1,8 @@
-use std::{fmt::Write, io::Read};
+use std::fmt::Write;
 
 use rand::Rng;
 
-use crate::fs::{DbDir, DbFile, MockDir};
+use crate::fs::MockDir;
 
 use super::Db;
 
@@ -96,7 +96,7 @@ impl TestCase {
     }
 
     fn run_iter<I: Iterator<Item = Op>>(it: I) -> Vec<Option<String>> {
-        let mut dir = MockDir::new();
+        let dir = MockDir::new();
 
         let mut db: Db<_, String, String> = Db::new(dir.clone()).unwrap();
 

@@ -636,7 +636,7 @@ mod test {
             let val: usize = rng.gen_range(0..100);
             let key = format!("key{}", val);
             let value = format!("value{}", i);
-            db.insert(key.clone(), value.clone());
+            db.insert(key.clone(), value.clone()).unwrap();
             map.insert(key, value);
             if rng.gen_range(0_usize..100) == 0 {
                 db.flush_memtable().unwrap();
@@ -754,13 +754,15 @@ mod test {
         let dir = MockDir::new();
         let mut db: Db<_, String, String> = Db::new(dir).unwrap();
         for i in 0..10 {
-            db.insert(format!("sstkey{}", i), format!("bar{}", i));
+            db.insert(format!("sstkey{}", i), format!("bar{}", i))
+                .unwrap();
         }
 
         let _fname = db.flush_memtable().unwrap();
 
         for i in 10..20 {
-            db.insert(format!("memkey{}", i), format!("bar{}", i));
+            db.insert(format!("memkey{}", i), format!("bar{}", i))
+                .unwrap();
         }
 
         let iter = db.scan().unwrap();
@@ -801,13 +803,15 @@ mod test {
 
         let mut db: Db<_, String, String> = Db::new(dir.clone()).unwrap();
         for i in 0..10 {
-            db.insert(format!("sstkey{}", i), format!("bar{}", i));
+            db.insert(format!("sstkey{}", i), format!("bar{}", i))
+                .unwrap();
         }
 
         let _fname = db.flush_memtable().unwrap();
 
         for i in 10..20 {
-            db.insert(format!("memkey{}", i), format!("bar{}", i));
+            db.insert(format!("memkey{}", i), format!("bar{}", i))
+                .unwrap();
         }
 
         let prev_data: Vec<_> = db.scan().unwrap().collect();

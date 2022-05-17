@@ -301,6 +301,7 @@ where
 
         // When we open we create a fresh WAL, so we need to add that to the root.
         let wal_name = wal.fname().to_owned();
+
         root.transform(move |mut layout| {
             layout.wals.push(wal_name);
             layout
